@@ -1,0 +1,62 @@
+# Simplified LRS setup for local development
+# This uses a basic xAPI-compatible LRS for testing
+# For production, use the official Learning Locker deployment
+
+services:
+  mongo:
+    image: mongo:4.4
+    container_name: lrs-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: changeme
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+
+  # Simple xAPI LRS - accepts statements without authentication for development
+  # In production, you should use Learning Locker or another secure LRS
+  lrs:
+    image: node:18-alpine
+    container_name: lrs-server
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      - mongo
+    environment:
+      MONGODB_URI: mongodb://admin:changeme@mongo:27017/xapi?authSource=admin
+      PORT: 8080
+      NODE_ENV: development
+    ports:
+      - "8080:8080"
+    command: >
+      sh -c "
+        npm install -g http-server &&
+        mkdir -p /app/public &&
+        echo '<!DOCTYPE html>
+        <html>
+        <head><title>Simple xAPI LRS</title></head>
+        <body>
+        <h1>Simple xAPI LRS Endpoint</h1>
+        <p>This is a placeholder LRS for development.</p>
+        <p>Endpoint: http://localhost:8080/data/xAPI</p>
+        <p>For production, use Learning Locker or another full-featured LRS.</p>
+        <p><strong>Note:</strong> This setup requires manual LRS configuration.</p>
+        <p>For now, you can:</p>
+        <ol>
+        <li>Use a hosted LRS service (Veracity, SCORM Cloud, etc.)</li>
+        <li>Set up Learning Locker using the official deployment guide</li>
+        <li>Use the backend xAPI proxy with mock/test credentials</li>
+        </ol>
+        </body>
+        </html>' > /app/public/index.html &&
+        http-server /app/public -p 8080
+      "
+    volumes:
+      - lrs-data:/app
+
+volumes:
+  mongo-data:
+  lrs-data:
+

@@ -1,0 +1,50 @@
+services:
+  mongo:
+    image: mongo:4.4
+    container_name: learninglocker-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: changeme
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - learninglocker-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: learninglocker-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - learninglocker-network
+
+  # Simple xAPI LRS for development
+  # This is a minimal LRS that implements the xAPI specification
+  # For production, use the official Learning Locker deployment
+  lrs:
+    image: adlnet/xapi-statement-viewer:latest
+    container_name: learninglocker-lrs
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      MONGODB_URI: mongodb://admin:changeme@mongo:27017/xapi?authSource=admin
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    networks:
+      - learninglocker-network
+
+volumes:
+  mongo-data:
+  learninglocker-data:
+
+networks:
+  learninglocker-network:
+    driver: bridge
+
+
