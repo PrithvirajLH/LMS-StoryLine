@@ -167,3 +167,8 @@ Consider using Azure Dev/Test pricing or reserved instances for production workl
 6. Set up alerts for unusual activity
 
 
+
+
+
+
+

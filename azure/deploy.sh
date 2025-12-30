@@ -120,3 +120,8 @@ echo "3. Run database migrations"
 echo "4. Upload course content to Blob Storage"
 
 
+
+
+
+
+

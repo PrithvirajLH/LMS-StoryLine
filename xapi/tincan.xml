@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<tincan xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://projecttincan.com/tincan.xsd">
+	<activities>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n" type="http://adlnet.gov/expapi/activities/course">
+			<name lang="und">SharePoint Navigation 101 - Custom</name>
+			<description lang="und" />
+			<launch lang="und">index_lms.html</launch>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/6Wh6oKMtG1B" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Intro Slide</name>
+			<description lang="und">Intro Slide</description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/5rY0DVu2ASj" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Navigation</name>
+			<description lang="und">Navigation</description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/64Z7kJPhm6X" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Menu Slide</name>
+			<description lang="und">Menu Slide</description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/5w6GAdJvlax" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Homepage Overview</name>
+			<description lang="und">Homepage Overview</description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/6FaQWNPQAo6" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Departments &amp; Tech page </name>
+			<description lang="und">Departments &amp; Tech page </description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/6BnvowJ1urM" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Search Bar</name>
+			<description lang="und">Search Bar</description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/6nB4Hr8SvQg" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Quicklinks</name>
+			<description lang="und">Quicklinks</description>
+		</activity>
+		<activity id="urn:articulate:storyline:5Ujw93Dh98n/6Kqe4RNidSn" type="http://adlnet.gov/expapi/activities/module">
+			<name lang="und">Troubleshoot</name>
+			<description lang="und">Troubleshoot</description>
+		</activity>
+	</activities>
+</tincan>

@@ -1,9 +1,20 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import api from '../services/api';
-import { getUser } from '../services/auth';
-import ProgressIndicator from '../components/ProgressIndicator';
-import Header from '../components/Header';
+import { useEffect, useState } from "react";
+import { Helmet } from "react-helmet-async";
+import { motion } from "framer-motion";
+import { 
+  BookOpen, 
+  Clock, 
+  Trophy, 
+  TrendingUp,
+  ChevronRight
+} from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Navbar } from "@/components/layout/Navbar";
+import { Footer } from "@/components/layout/Footer";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import api from "../services/api";
+import { getUser } from "../services/auth";
 
 interface CourseProgress {
   courseId: string;
@@ -19,10 +30,10 @@ interface CourseProgress {
   completedAt?: string;
 }
 
-export default function ProgressDashboard() {
+const ProgressDashboard = () => {
   const [courses, setCourses] = useState<CourseProgress[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const navigate = useNavigate();
   const user = getUser();
 
@@ -44,186 +55,249 @@ export default function ProgressDashboard() {
     }
   };
 
+  const enrolledCourses = courses.filter(c => c.enrollmentStatus === 'enrolled' || c.enrollmentStatus === 'in_progress');
+  
+  const stats = [
+    { 
+      icon: BookOpen, 
+      label: "Courses Enrolled", 
+      value: enrolledCourses.length.toString(), 
+      color: "text-primary" 
+    },
+    { 
+      icon: Clock, 
+      label: "Hours Learned", 
+      value: courses.reduce((acc, c) => acc + (parseFloat(c.timeSpent?.replace(' hours', '') || '0')), 0).toFixed(0), 
+      color: "text-info" 
+    },
+    { 
+      icon: Trophy, 
+      label: "Certificates", 
+      value: courses.filter(c => c.completionStatus === 'completed' || c.completionStatus === 'passed').length.toString(), 
+      color: "text-accent" 
+    },
+    { 
+      icon: TrendingUp, 
+      label: "In Progress", 
+      value: courses.filter(c => c.completionStatus === 'in_progress').length.toString(), 
+      color: "text-success" 
+    },
+  ];
+
   return (
-    <div style={styles.container}>
-      <Header title="My Learning Progress" />
+    <>
+      <Helmet>
+        <title>Dashboard | Learn Swift Hub</title>
+        <meta name="description" content="Track your learning progress, view enrolled courses, and manage your learning journey." />
+      </Helmet>
 
-      <main style={styles.main}>
+      <div className="min-h-screen bg-background">
+        <Navbar />
 
-        {error && <div style={styles.error}>{error}</div>}
+        <main className="pt-24 pb-16">
+          <div className="container mx-auto px-4 lg:px-8">
+            {/* Header */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-8"
+            >
+              <h1 className="text-3xl md:text-4xl font-bold text-foreground mb-2">
+                Welcome back{user?.firstName ? `, ${user.firstName}` : ''}! 👋
+              </h1>
+              <p className="text-muted-foreground">
+                Continue your learning journey and track your progress
+              </p>
+            </motion.div>
 
-        {loading ? (
-          <div style={styles.loading}>Loading progress...</div>
-        ) : courses.length === 0 ? (
-          <div style={styles.empty}>
-            <p>You haven't enrolled in any courses yet.</p>
-            <button onClick={() => navigate('/courses')} style={styles.button}>
-              Browse Courses
-            </button>
-          </div>
-        ) : (
-          <div style={styles.grid}>
-            {courses.map((course) => (
-              <div key={course.courseId} style={styles.card}>
-                {course.thumbnailUrl && (
-                  <img src={course.thumbnailUrl} alt={course.title} style={styles.thumbnail} />
-                )}
-                <div style={styles.content}>
-                  <h3 style={styles.title}>{course.title}</h3>
-                  {course.description && (
-                    <p style={styles.description}>{course.description}</p>
-                  )}
-
-                  <div style={styles.progressSection}>
-                    <ProgressIndicator
-                      status={course.completionStatus}
-                      score={course.score}
-                    />
-                    {course.timeSpent && (
-                      <p style={styles.timeSpent}>Time Spent: {course.timeSpent}</p>
-                    )}
-                  </div>
-
-                  <div style={styles.meta}>
-                    <p style={styles.metaText}>
-                      Enrolled: {new Date(course.enrolledAt).toLocaleDateString()}
-                    </p>
-                    {course.completedAt && (
-                      <p style={styles.metaText}>
-                        Completed: {new Date(course.completedAt).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
-
-                  <button
-                    onClick={() => navigate(`/player/${course.courseId}`)}
-                    style={styles.button}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.transform = 'scale(1.02)';
-                      e.currentTarget.style.boxShadow = 'var(--shadow-md)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.transform = 'scale(1)';
-                      e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
-                    }}
-                  >
-                    {course.completionStatus === 'completed' || course.completionStatus === 'passed'
-                      ? 'Review Course'
-                      : 'Continue Learning'}
-                  </button>
-                </div>
+            {error && (
+              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20">
+                {error}
               </div>
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}
+            )}
 
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    minHeight: '100vh',
-  },
-  main: {
-    maxWidth: '1400px',
-    margin: '0 auto',
-    padding: '2rem',
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-    gap: '1.5rem',
-  },
-  card: {
-    backgroundColor: 'white',
-    borderRadius: 'var(--radius-lg)',
-    boxShadow: 'var(--shadow-md)',
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column',
-    transition: 'all var(--transition-base)',
-    border: '1px solid var(--gray-200)',
-  },
-  thumbnail: {
-    width: '100%',
-    height: '200px',
-    objectFit: 'cover',
-    backgroundColor: 'var(--gray-100)',
-  },
-  content: {
-    padding: '1.5rem',
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  title: {
-    marginBottom: '0.75rem',
-    color: 'var(--gray-800)',
-    fontSize: '1.25rem',
-    fontWeight: '600',
-  },
-  description: {
-    color: 'var(--gray-600)',
-    marginBottom: '1rem',
-    fontSize: '0.95rem',
-    lineHeight: '1.6',
-  },
-  progressSection: {
-    marginBottom: '1rem',
-  },
-  timeSpent: {
-    fontSize: '0.875rem',
-    color: 'var(--gray-600)',
-    marginTop: '0.5rem',
-    fontWeight: '500',
-  },
-  meta: {
-    marginBottom: '1rem',
-    paddingTop: '1rem',
-    borderTop: '1px solid var(--gray-200)',
-  },
-  metaText: {
-    fontSize: '0.875rem',
-    color: 'var(--gray-500)',
-    margin: '0.25rem 0',
-  },
-  button: {
-    padding: '0.875rem 1.5rem',
-    background: 'linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)',
-    color: 'white',
-    border: 'none',
-    borderRadius: 'var(--radius-md)',
-    cursor: 'pointer',
-    fontSize: '1rem',
-    fontWeight: '600',
-    marginTop: 'auto',
-    transition: 'all var(--transition-base)',
-    boxShadow: 'var(--shadow-sm)',
-  },
-  loading: {
-    textAlign: 'center',
-    padding: '3rem',
-    color: 'var(--gray-600)',
-    fontSize: '1.1rem',
-  },
-  error: {
-    backgroundColor: '#fef2f2',
-    color: '#dc2626',
-    padding: '1rem 1.5rem',
-    borderRadius: 'var(--radius-md)',
-    marginBottom: '1rem',
-    border: '1px solid #fecaca',
-    boxShadow: 'var(--shadow-sm)',
-  },
-  empty: {
-    textAlign: 'center',
-    padding: '3rem',
-    backgroundColor: 'white',
-    borderRadius: 'var(--radius-lg)',
-    boxShadow: 'var(--shadow-sm)',
-    border: '1px solid var(--gray-200)',
-  },
+            {/* Stats Grid */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-12"
+            >
+              {stats.map((stat) => (
+                <div
+                  key={stat.label}
+                  className="bg-card rounded-2xl p-6 border border-border/50 shadow-sm"
+                >
+                  <div className={`w-12 h-12 rounded-xl bg-secondary flex items-center justify-center mb-4 ${stat.color}`}>
+                    <stat.icon className="h-6 w-6" />
+                  </div>
+                  <div className="text-2xl font-bold text-foreground mb-1">{stat.value}</div>
+                  <div className="text-sm text-muted-foreground">{stat.label}</div>
+                </div>
+              ))}
+            </motion.div>
+
+            <div className="grid lg:grid-cols-3 gap-8">
+              {/* Continue Learning */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="lg:col-span-2"
+              >
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-xl font-bold text-foreground">Continue Learning</h2>
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link to="/courses">View All</Link>
+                  </Button>
+                </div>
+
+                {loading ? (
+                  <div className="text-center py-16">
+                    <p className="text-muted-foreground">Loading courses...</p>
+                  </div>
+                ) : enrolledCourses.length > 0 ? (
+                  <div className="space-y-4">
+                    {enrolledCourses.map((course) => {
+                      const progress = course.score || (course.completionStatus === 'completed' ? 100 : 0);
+                      return (
+                        <Link
+                          key={course.courseId}
+                          to={`/player/${course.courseId}`}
+                          className="block"
+                        >
+                          <div className="bg-card rounded-2xl p-4 border border-border/50 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 group">
+                            <div className="flex gap-4">
+                              {course.thumbnailUrl ? (
+                                <img
+                                  src={course.thumbnailUrl}
+                                  alt={course.title}
+                                  className="w-24 h-24 md:w-32 md:h-20 rounded-xl object-cover flex-shrink-0"
+                                />
+                              ) : (
+                                <div className="w-24 h-24 md:w-32 md:h-20 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
+                                  <BookOpen className="h-8 w-8 text-muted-foreground" />
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-semibold text-foreground mb-1 truncate group-hover:text-primary transition-colors">
+                                  {course.title}
+                                </h3>
+                                {course.description && (
+                                  <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
+                                    {course.description}
+                                  </p>
+                                )}
+                                <div className="flex items-center gap-3">
+                                  <Progress value={progress} className="h-2 flex-1" />
+                                  <span className="text-sm font-medium text-primary">
+                                    {progress}%
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="hidden md:flex items-center">
+                                <Button variant="ghost" size="icon">
+                                  <ChevronRight className="h-5 w-5" />
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="bg-card rounded-2xl p-8 text-center border border-border/50">
+                    <p className="text-muted-foreground mb-4">You haven't enrolled in any courses yet.</p>
+                    <Button variant="hero" asChild>
+                      <Link to="/courses">Browse Courses</Link>
+                    </Button>
+                  </div>
+                )}
+
+                {/* Empty state CTA */}
+                {enrolledCourses.length > 0 && (
+                  <div className="mt-8 bg-primary/5 rounded-2xl p-8 text-center border border-primary/10">
+                    <h3 className="font-semibold text-foreground mb-2">
+                      Ready to learn something new?
+                    </h3>
+                    <p className="text-muted-foreground mb-6">
+                      Explore our catalog and find your next course
+                    </p>
+                    <Button variant="hero" asChild>
+                      <Link to="/courses">Browse Courses</Link>
+                    </Button>
+                  </div>
+                )}
+              </motion.div>
+
+              {/* Sidebar */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="space-y-6"
+              >
+                {/* Recent Activity */}
+                <div className="bg-card rounded-2xl p-6 border border-border/50 shadow-sm">
+                  <h3 className="font-semibold text-foreground mb-4">Recent Activity</h3>
+                  {courses.length > 0 ? (
+                    <div className="space-y-4">
+                      {courses.slice(0, 3).map((course, index) => (
+                        <div
+                          key={course.courseId}
+                          className="flex items-start gap-3 pb-4 border-b border-border/50 last:border-0 last:pb-0"
+                        >
+                          <div className="w-2 h-2 rounded-full bg-primary mt-2 flex-shrink-0" />
+                          <div>
+                            <p className="text-sm text-foreground">
+                              <span className="font-medium">
+                                {course.completionStatus === 'completed' ? 'Completed' : 
+                                 course.completionStatus === 'in_progress' ? 'In Progress' : 
+                                 'Enrolled in'}
+                              </span>
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {course.title}
+                            </p>
+                            {course.enrolledAt && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {new Date(course.enrolledAt).toLocaleDateString()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No recent activity</p>
+                  )}
+                </div>
+
+                {/* Achievement Highlight */}
+                {courses.filter(c => c.completionStatus === 'completed' || c.completionStatus === 'passed').length > 0 && (
+                  <div className="bg-gradient-to-br from-accent/20 to-accent/5 rounded-2xl p-6 border border-accent/20">
+                    <div className="w-14 h-14 rounded-xl bg-accent/20 flex items-center justify-center mb-4">
+                      <Trophy className="h-7 w-7 text-accent" />
+                    </div>
+                    <h3 className="font-semibold text-foreground mb-2">
+                      {courses.filter(c => c.completionStatus === 'completed' || c.completionStatus === 'passed').length} 
+                      {courses.filter(c => c.completionStatus === 'completed' || c.completionStatus === 'passed').length === 1 ? ' Course' : ' Courses'} Completed!
+                    </h3>
+                    <p className="text-sm text-muted-foreground mb-4">
+                      Great progress! Keep up the excellent work.
+                    </p>
+                  </div>
+                )}
+              </motion.div>
+            </div>
+          </div>
+        </main>
+
+        <Footer />
+      </div>
+    </>
+  );
 };
 
-
+export default ProgressDashboard;

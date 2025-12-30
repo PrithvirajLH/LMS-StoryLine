@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Launch Storyline Course</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-top: 10px;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .info {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #555;
+        }
+        .error {
+            background: #fee;
+            border-left: 4px solid #f44;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #c33;
+            display: none;
+        }
+        .success {
+            background: #efe;
+            border-left: 4px solid #4c4;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #3c3;
+            display: none;
+        }
+        .link {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .link:hover {
+            text-decoration: underline;
+        }
+        .api-url {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Launch Course</h1>
+        <p class="subtitle">Enter your credentials to launch the Storyline course</p>
+
+        <div id="error" class="error"></div>
+        <div id="success" class="success"></div>
+
+        <div class="info">
+            <strong>First time?</strong> Register a new account or use the default admin:
+            <br><code>admin@example.com</code> / <code>admin123</code>
+        </div>
+
+        <div class="form-group">
+            <label for="api-url">API URL:</label>
+            <input type="text" id="api-url" value="http://localhost:3000" placeholder="http://localhost:3000">
+            <div class="api-url">Change this if your server runs on a different port</div>
+        </div>
+
+        <div class="form-group">
+            <label for="email">Email:</label>
+            <input type="email" id="email" placeholder="your@email.com" value="admin@example.com">
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password:</label>
+            <input type="password" id="password" placeholder="Your password" value="admin123">
+        </div>
+
+        <button onclick="loginAndLaunch()">Launch Course</button>
+        <button onclick="register()" style="background: #6c757d; margin-top: 10px;">Register New Account</button>
+
+        <div style="margin-top: 20px; text-align: center; font-size: 12px; color: #999;">
+            <a href="#" onclick="showTokenInput(); return false;" class="link">Already have a token? Use it directly</a>
+        </div>
+
+        <div id="token-section" style="display: none; margin-top: 20px;">
+            <div class="form-group">
+                <label for="token">JWT Token:</label>
+                <input type="text" id="token" placeholder="Paste your JWT token here">
+            </div>
+            <button onclick="launchWithToken()">Launch with Token</button>
+        </div>
+    </div>
+
+    <script>
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.getElementById('success');
+            successDiv.textContent = message;
+            successDiv.style.display = 'block';
+            setTimeout(() => {
+                successDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        function showTokenInput() {
+            document.getElementById('token-section').style.display = 'block';
+        }
+
+        async function loginAndLaunch() {
+            const apiUrl = document.getElementById('api-url').value;
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            if (!email || !password) {
+                showError('Please enter email and password');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(data.error || 'Login failed');
+                    return;
+                }
+
+                // Launch course with token
+                window.location.href = `${apiUrl}/launch?token=${data.token}`;
+            } catch (error) {
+                showError('Error: ' + error.message);
+            }
+        }
+
+        async function register() {
+            const apiUrl = document.getElementById('api-url').value;
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            if (!email || !password) {
+                showError('Please enter email and password');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/api/auth/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password, name: email.split('@')[0] })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(data.error || 'Registration failed');
+                    return;
+                }
+
+                showSuccess('Account created! Launching course...');
+                setTimeout(() => {
+                    window.location.href = `${apiUrl}/launch?token=${data.token}`;
+                }, 1000);
+            } catch (error) {
+                showError('Error: ' + error.message);
+            }
+        }
+
+        function launchWithToken() {
+            const apiUrl = document.getElementById('api-url').value;
+            const token = document.getElementById('token').value;
+
+            if (!token) {
+                showError('Please enter a token');
+                return;
+            }
+
+            window.location.href = `${apiUrl}/launch?token=${token}`;
+        }
+
+        // Allow Enter key to submit
+        document.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loginAndLaunch();
+            }
+        });
+
+        // Auto-fill token from URL if present
+        const urlParams = new URLSearchParams(window.location.search);
+        const tokenParam = urlParams.get('token');
+        if (tokenParam) {
+            document.getElementById('token').value = tokenParam;
+            document.getElementById('token-section').style.display = 'block';
+        }
+    </script>
+</body>
+</html>
+

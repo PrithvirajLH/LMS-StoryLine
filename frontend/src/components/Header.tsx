@@ -13,7 +13,7 @@ export default function Header({ title }: HeaderProps) {
     <header style={styles.header}>
       <div style={styles.leftSection}>
         <h1 style={styles.logo} onClick={() => navigate('/courses')}>
-          📚 LMS
+          🚀 Learn Swift Hub
         </h1>
         {title && <span style={styles.pageTitle}>{title}</span>}
       </div>
@@ -63,7 +63,7 @@ export default function Header({ title }: HeaderProps) {
           <button
             onClick={() => {
               logout();
-              navigate('/login');
+              navigate('/login', { replace: true });
             }}
             style={styles.logoutButton}
           >
@@ -149,4 +149,6 @@ const styles: { [key: string]: React.CSSProperties } = {
     transition: 'all 0.2s ease',
   },
 };
+
+
 

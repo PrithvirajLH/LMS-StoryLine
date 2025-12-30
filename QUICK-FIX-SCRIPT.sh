@@ -25,3 +25,8 @@ fi\
 echo "Script patched. The script will now check for existing Node.js before installing."
 echo "Run: sudo bash deployll.sh"
 
+
+
+
+
+

@@ -1,177 +1,185 @@
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import api from '../services/api';
-import { setToken, setUser } from '../services/auth';
+import { useState } from "react";
+import { Helmet } from "react-helmet-async";
+import { motion } from "framer-motion";
+import { useNavigate, Link } from "react-router-dom";
+import { GraduationCap, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
+import api from "../services/api";
+import { setToken, setUser } from "../services/auth";
 
-export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+const Login = () => {
   const navigate = useNavigate();
+  const [showPassword, setShowPassword] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    email: "",
+    password: "",
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    setLoading(true);
+    setIsLoading(true);
 
     try {
-      const response = await api.post('/api/auth/login', { email, password });
+      const response = await api.post('/api/auth/login', { email: formData.email, password: formData.password });
       setToken(response.data.token);
       setUser(response.data.user);
-      navigate('/courses');
+      toast.success("Welcome back!");
+      navigate("/courses");
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Login failed');
+      toast.error(err.response?.data?.error || 'Login failed');
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <h1 style={styles.title}>Login</h1>
-        {error && <div style={styles.error}>{error}</div>}
-        <form onSubmit={handleSubmit} style={styles.form}>
-          <div style={styles.formGroup}>
-            <label htmlFor="email" style={styles.label}>
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              style={styles.input}
-              placeholder="Enter your email"
-            />
-          </div>
-          <div style={styles.formGroup}>
-            <label htmlFor="password" style={styles.label}>
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              style={styles.input}
-              placeholder="Enter your password"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              ...styles.button,
-              opacity: loading ? 0.7 : 1,
-              cursor: loading ? 'not-allowed' : 'pointer',
-            }}
-            onMouseEnter={(e) => {
-              if (!loading) {
-                e.currentTarget.style.transform = 'scale(1.02)';
-                e.currentTarget.style.boxShadow = 'var(--shadow-lg)';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!loading) {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.boxShadow = 'var(--shadow-md)';
-              }
-            }}
-          >
-            {loading ? 'Logging in...' : 'Login'}
-          </button>
-        </form>
-        <p style={styles.linkText}>
-          Don't have an account? <Link to="/register">Register here</Link>
-        </p>
-      </div>
-    </div>
-  );
-}
+    <>
+      <Helmet>
+        <title>Sign In | Learn Swift Hub</title>
+        <meta name="description" content="Sign in to your Learn Swift Hub account to access your courses and track your progress." />
+      </Helmet>
 
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '1rem',
-  },
-  card: {
-    backgroundColor: 'white',
-    padding: '2.5rem',
-    borderRadius: 'var(--radius-xl)',
-    boxShadow: 'var(--shadow-xl)',
-    width: '100%',
-    maxWidth: '420px',
-    border: '1px solid var(--gray-200)',
-  },
-  title: {
-    marginBottom: '2rem',
-    textAlign: 'center',
-    color: 'var(--gray-800)',
-    fontSize: '2rem',
-    fontWeight: '700',
-    background: 'linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  formGroup: {
-    marginBottom: '1.25rem',
-  },
-  label: {
-    display: 'block',
-    marginBottom: '0.5rem',
-    color: 'var(--gray-700)',
-    fontWeight: '600',
-    fontSize: '0.9rem',
-  },
-  input: {
-    width: '100%',
-    padding: '0.875rem 1rem',
-    border: '2px solid var(--gray-200)',
-    borderRadius: 'var(--radius-md)',
-    fontSize: '1rem',
-    transition: 'all var(--transition-base)',
-    backgroundColor: 'white',
-    color: 'var(--gray-800)',
-  },
-  button: {
-    padding: '0.875rem 1.5rem',
-    background: 'linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)',
-    color: 'white',
-    border: 'none',
-    borderRadius: 'var(--radius-md)',
-    fontSize: '1rem',
-    fontWeight: '600',
-    cursor: 'pointer',
-    marginTop: '0.5rem',
-    transition: 'all var(--transition-base)',
-    boxShadow: 'var(--shadow-md)',
-  },
-  error: {
-    backgroundColor: '#fef2f2',
-    color: '#dc2626',
-    padding: '0.875rem 1rem',
-    borderRadius: 'var(--radius-md)',
-    marginBottom: '1rem',
-    border: '1px solid #fecaca',
-    fontSize: '0.9rem',
-  },
-  linkText: {
-    marginTop: '1.5rem',
-    textAlign: 'center',
-    color: 'var(--gray-600)',
-    fontSize: '0.9rem',
-  },
+      <div className="min-h-screen bg-background flex">
+        {/* Left Panel - Branding */}
+        <div className="hidden lg:flex lg:w-1/2 bg-primary relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_hsl(38_92%_50%/0.15),_transparent_50%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_left,_hsl(38_92%_50%/0.1),_transparent_50%)]" />
+          
+          <div className="relative z-10 flex flex-col justify-center px-16">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+            >
+              <div className="flex items-center gap-3 mb-8">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent shadow-glow">
+                  <GraduationCap className="h-8 w-8 text-accent-foreground" />
+                </div>
+                <span className="text-3xl font-bold text-primary-foreground">Learn Swift Hub</span>
+              </div>
+
+              <h1 className="text-4xl font-bold text-primary-foreground mb-4">
+                Welcome to Your Learning Journey
+              </h1>
+              <p className="text-lg text-primary-foreground/70 mb-8 max-w-md">
+                Access your courses, track your progress with xAPI, and achieve your learning goals.
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 text-primary-foreground/80">
+                  <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
+                    <span className="text-accent font-semibold">✓</span>
+                  </div>
+                  <span>xAPI-powered progress tracking</span>
+                </div>
+                <div className="flex items-center gap-3 text-primary-foreground/80">
+                  <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
+                    <span className="text-accent font-semibold">✓</span>
+                  </div>
+                  <span>Articulate Storyline support</span>
+                </div>
+                <div className="flex items-center gap-3 text-primary-foreground/80">
+                  <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
+                    <span className="text-accent font-semibold">✓</span>
+                  </div>
+                  <span>Resume where you left off</span>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        </div>
+
+        {/* Right Panel - Form */}
+        <div className="flex-1 flex items-center justify-center p-8">
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="w-full max-w-md"
+          >
+            {/* Mobile Logo */}
+            <div className="lg:hidden flex items-center gap-2 mb-8 justify-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary shadow-md">
+                <GraduationCap className="h-7 w-7 text-primary-foreground" />
+              </div>
+              <span className="text-2xl font-bold text-foreground">Learn Swift Hub</span>
+            </div>
+
+            <div className="text-center mb-8">
+              <h2 className="text-2xl font-bold text-foreground mb-2">Sign in to your account</h2>
+              <p className="text-muted-foreground">Enter your credentials to access your courses</p>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="you@example.com"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className="pl-10 h-12"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Password</Label>
+                  <button type="button" className="text-sm text-primary hover:underline">
+                    Forgot password?
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    className="pl-10 pr-10 h-12"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
+              </div>
+
+              <Button 
+                type="submit" 
+                variant="hero" 
+                size="lg" 
+                className="w-full"
+                disabled={isLoading}
+              >
+                {isLoading ? "Signing in..." : "Sign In"}
+              </Button>
+            </form>
+
+            <p className="text-center text-sm text-muted-foreground mt-8">
+              Don't have an account?{" "}
+              <Link to="/register" className="text-primary font-medium hover:underline">
+                Register here
+              </Link>
+            </p>
+          </motion.div>
+        </div>
+      </div>
+    </>
+  );
 };
 
-
+export default Login;
