@@ -3,7 +3,6 @@ import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Menu, X, GraduationCap, LogOut, Settings } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useNavigate } from "react-router-dom";
 import { logout, getUser, isAdmin } from "@/services/auth";
 
 const navLinks = [
@@ -14,12 +13,12 @@ const navLinks = [
 export const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
-  const navigate = useNavigate();
   const user = getUser();
 
   const handleLogout = () => {
     logout();
-    navigate("/login", { replace: true });
+    // Use window.location for immediate redirect (full page reload)
+    window.location.href = "/login";
   };
 
   return (
@@ -31,7 +30,7 @@ export const Navbar = () => {
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary shadow-md group-hover:shadow-lg transition-shadow">
               <GraduationCap className="h-6 w-6 text-primary-foreground" />
             </div>
-            <span className="text-xl font-bold text-foreground">Learn Swift Hub</span>
+            <span className="text-xl font-bold text-foreground">Creative Learning</span>
           </Link>
 
           {/* Desktop Navigation */}

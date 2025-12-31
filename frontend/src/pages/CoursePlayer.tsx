@@ -27,9 +27,13 @@ const CoursePlayer = () => {
         const response = await api.post(`/api/courses/${courseId}/launch`);
         setCourse(response.data.course);
         setLaunchUrl(response.data.launchUrl);
-        // Get progress if available
-        if (response.data.course?.score) {
+        // Get progressPercent from database (preferred) or fallback to score
+        if (response.data.course?.progressPercent !== undefined) {
+          setProgress(response.data.course.progressPercent);
+        } else if (response.data.course?.score) {
           setProgress(response.data.course.score);
+        } else {
+          setProgress(0);
         }
       } catch (err: any) {
         console.error('❌ Course Launch Error:', err);
@@ -98,8 +102,13 @@ const CoursePlayer = () => {
                     const response = await api.post(`/api/courses/${courseId}/launch`);
                     setCourse(response.data.course);
                     setLaunchUrl(response.data.launchUrl);
-                    if (response.data.course?.score) {
+                    // Get progressPercent from database (preferred) or fallback to score
+                    if (response.data.course?.progressPercent !== undefined) {
+                      setProgress(response.data.course.progressPercent);
+                    } else if (response.data.course?.score) {
                       setProgress(response.data.course.score);
+                    } else {
+                      setProgress(0);
                     }
                     setError('');
                   } catch (err: any) {
@@ -141,7 +150,7 @@ const CoursePlayer = () => {
   return (
     <>
       <Helmet>
-        <title>{course.title} | Learn Swift Hub</title>
+        <title>{course.title} | Creative Learning</title>
         <meta name="description" content={`Learning: ${course.title}`} />
       </Helmet>
 

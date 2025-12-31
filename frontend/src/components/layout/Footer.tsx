@@ -12,7 +12,7 @@ export const Footer = () => {
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent shadow-md">
                 <GraduationCap className="h-6 w-6 text-accent-foreground" />
               </div>
-              <span className="text-xl font-bold">Learn Swift Hub</span>
+              <span className="text-xl font-bold">Creative Learning</span>
             </Link>
             <p className="text-primary-foreground/70 text-sm">
               Empowering learners worldwide with quality education and xAPI-powered progress tracking.
@@ -54,7 +54,7 @@ export const Footer = () => {
         </div>
 
         <div className="mt-12 pt-8 border-t border-primary-foreground/10 text-center text-sm text-primary-foreground/50">
-          <p>© {new Date().getFullYear()} Learn Swift Hub. All rights reserved. Powered by xAPI.</p>
+          <p>© {new Date().getFullYear()} Creative Learning. All rights reserved. Powered by xAPI.</p>
         </div>
       </div>
     </footer>

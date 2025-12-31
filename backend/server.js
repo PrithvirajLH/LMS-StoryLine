@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import { Readable } from 'stream';
 
 // Import services
 import * as xapiLRS from './xapi-lrs-azure.js';
@@ -37,8 +38,38 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Experience-API-Version']
 }));
 
+// IMPORTANT: Handle raw body for xAPI state PUT BEFORE express.json()
+// Storyline sends state as application/octet-stream (binary), NOT JSON
+// Storyline uses a proprietary encoded format, so we save it as-is (string)
+app.put('/xapi/activities/state', express.raw({ type: ['application/octet-stream', 'application/json', '*/*'], limit: '10mb' }), (req, res, next) => {
+  // Convert buffer to string - Storyline expects the exact same format back
+  if (Buffer.isBuffer(req.body)) {
+    req.body = req.body.toString('utf8');
+    console.log(`[xAPI State Middleware] Converted buffer to string (${req.body.length} chars), Preview: ${req.body.substring(0, 100)}`);
+  } else if (typeof req.body === 'object' && req.body !== null) {
+    // If it's already an object, try to stringify it (for JSON content-type)
+    try {
+      req.body = JSON.stringify(req.body);
+      console.log(`[xAPI State Middleware] Stringified object to JSON string`);
+    } catch (e) {
+      console.warn(`[xAPI State Middleware] Could not stringify object: ${e.message}`);
+      req.body = String(req.body);
+    }
+  }
+  // Keep as string - Storyline's format is not JSON, it's a proprietary encoding
+  next();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Log xAPI state requests for debugging
+app.use('/xapi/activities/state', (req, res, next) => {
+  if (req.method === 'GET') {
+    console.log(`[xAPI State] GET - stateId: ${req.query.stateId}, hasAgent: ${!!req.query.agent}, activityId: ${req.query.activityId?.substring(0, 50) || 'missing'}...`);
+  }
+  next();
+});
 
 // Handle preflight requests
 app.options('*', (req, res) => {
@@ -148,10 +179,17 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
     const userEmail = user.email;
     if (userEmail) {
       try {
+        // Get existing progress to increment attempts correctly
+        const existingProgressList = await progressStorage.getUserProgress(userEmail);
+        const currentProgress = existingProgressList.find(p => p.courseId === courseId);
+        const currentAttempts = currentProgress?.attempts || 0;
+        
         await progressStorage.updateProgress(userEmail, courseId, {
           enrollmentStatus: 'enrolled',
-          completionStatus: 'in_progress'
+          completionStatus: 'in_progress',
+          attempts: currentAttempts + 1 // Increment attempts on launch
         });
+        console.log(`[Progress] ✅ Updated progress on launch: attempts=${currentAttempts + 1}`);
       } catch (progressError) {
         console.error('[Progress] Error updating progress on launch:', progressError);
         // Continue with launch even if progress update fails
@@ -189,6 +227,29 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
       : course.launchFile;
     const launchUrl = `${BASE_URL}/course/${filePath}?${params.toString()}`;
 
+    // Get current progress to include progressPercent
+    let progressPercent = 0;
+    let completionStatus = 'not_started';
+    if (userEmail) {
+      try {
+        const progressList = await progressStorage.getUserProgress(userEmail);
+        const currentProgress = progressList.find(p => p.courseId === courseId);
+        if (currentProgress) {
+          completionStatus = currentProgress.completionStatus || 'not_started';
+          // Use progressPercent from database if available, otherwise calculate
+          if (currentProgress.progressPercent !== undefined) {
+            progressPercent = currentProgress.progressPercent;
+          } else if (completionStatus === 'completed' || completionStatus === 'passed') {
+            progressPercent = 100;
+          } else if (completionStatus === 'in_progress') {
+            progressPercent = currentProgress.score || 0;
+          }
+        }
+      } catch (progressError) {
+        console.error('[Progress] Error getting progress for launch:', progressError);
+      }
+    }
+
     res.json({
       course: {
         courseId: course.courseId,
@@ -197,7 +258,9 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
         thumbnailUrl: course.thumbnailUrl,
         activityId: course.activityId,
         isEnrolled: true,
-        enrollmentStatus: 'enrolled'
+        enrollmentStatus: 'enrolled',
+        completionStatus: completionStatus,
+        progressPercent: progressPercent
       },
       launchUrl: launchUrl,
       registrationId: registrationId
@@ -388,10 +451,105 @@ app.get('/course/*', async (req, res, next) => {
 // xAPI LRS Endpoints
 // ============================================================================
 
+// Helper function to extract base activity ID from statement activity ID
+// Storyline sends statements with extended IDs like "urn:articulate:storyline:5Ujw93Dh98n/6BnvowJ1urM"
+// We need to match against the base course activity ID "urn:articulate:storyline:5Ujw93Dh98n"
+function extractBaseActivityId(activityId) {
+  if (!activityId) return null;
+  // If activityId contains a '/', extract the base part (everything before the first '/')
+  const slashIndex = activityId.indexOf('/');
+  return slashIndex > 0 ? activityId.substring(0, slashIndex) : activityId;
+}
+
+// Helper function to find course by activity ID (handles extended IDs)
+async function findCourseByActivityId(activityId) {
+  const allCourses = await coursesStorage.getAllCourses();
+  const baseActivityId = extractBaseActivityId(activityId);
+  
+  // Try exact match first
+  let course = allCourses.find(c => c.activityId === activityId);
+  if (course) return course;
+  
+  // Try base activity ID match (for extended IDs like "base/sub")
+  if (baseActivityId && baseActivityId !== activityId) {
+    course = allCourses.find(c => c.activityId === baseActivityId);
+    if (course) return course;
+  }
+  
+  // Try prefix match (statement activity ID starts with course activity ID)
+  course = allCourses.find(c => activityId.startsWith(c.activityId + '/') || activityId === c.activityId);
+  return course || null;
+}
+
 // POST /xapi/statements - Store statement(s)
 app.post('/xapi/statements', async (req, res) => {
+  console.log(`[xAPI POST] /xapi/statements endpoint called`);
   try {
+    const statement = Array.isArray(req.body) ? req.body[0] : req.body;
+    console.log(`[xAPI Statements] Received statement:`, {
+      hasActor: !!statement?.actor,
+      hasObject: !!statement?.object,
+      actorMbox: statement?.actor?.mbox,
+      objectId: statement?.object?.id,
+      bodyType: Array.isArray(req.body) ? 'array' : typeof req.body,
+      bodyLength: JSON.stringify(req.body).length
+    });
     const result = await xapiLRS.saveStatement(req.body);
+    
+    // Auto-sync progress when statements are saved
+    console.log(`[Progress] Checking statement for sync:`, {
+      hasStatement: !!statement,
+      hasActor: !!statement?.actor,
+      hasObject: !!statement?.object,
+      actorMbox: statement?.actor?.mbox,
+      objectId: statement?.object?.id
+    });
+    
+    if (statement && statement.actor && statement.object) {
+      try {
+        const actor = statement.actor;
+        const activityId = statement.object.id;
+        const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : null;
+        
+        console.log(`[Progress] ✅ Auto-sync triggered: userEmail=${userEmail}, activityId=${activityId}`);
+        
+        if (userEmail && activityId) {
+          // Find course by activityId (handles extended IDs)
+          const course = await findCourseByActivityId(activityId);
+          
+          if (course) {
+            // Use the course's base activityId for syncing (not the extended one from statement)
+            const baseActivityId = course.activityId;
+            console.log(`[Progress] ✅ Found course ${course.courseId} for activityId ${activityId} (base: ${baseActivityId}), syncing progress...`);
+            // Sync progress in background (don't wait for it)
+            progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId)
+              .then(result => {
+                if (result) {
+                  console.log(`[Progress] ✅✅ Sync completed: status=${result.completionStatus}, timeSpent=${result.timeSpent}s, score=${result.score}, progressPercent=${result.progressPercent}`);
+                } else {
+                  console.log(`[Progress] ⚠️ Sync returned null (no statements found)`);
+                }
+              })
+              .catch(err => {
+                console.error('[Progress] ❌ Auto-sync error:', err);
+                console.error('[Progress] ❌ Error stack:', err.stack);
+              });
+          } else {
+            const allCourses = await coursesStorage.getAllCourses();
+            console.warn(`[Progress] ⚠️ No course found for activityId: ${activityId} (base: ${extractBaseActivityId(activityId)})`);
+            console.warn(`[Progress] Available courses:`, allCourses.map(c => ({ id: c.courseId, activityId: c.activityId })));
+          }
+        } else {
+          console.warn(`[Progress] ⚠️ Missing userEmail or activityId: userEmail=${userEmail}, activityId=${activityId}`);
+        }
+      } catch (syncErr) {
+        // Don't fail the statement save if sync fails
+        console.error('[Progress] ❌ Error auto-syncing progress:', syncErr);
+        console.error('[Progress] ❌ Error stack:', syncErr.stack);
+      }
+    } else {
+      console.warn(`[Progress] ⚠️ Statement missing required fields for sync`);
+    }
     res.status(result.status).json(result.data);
   } catch (error) {
     console.error('[xAPI] Error saving statement:', error);
@@ -422,6 +580,7 @@ app.get('/xapi/statements', async (req, res) => {
 
 // PUT /xapi/statements - Update statement (Storyline uses statementId query param)
 app.put('/xapi/statements', async (req, res) => {
+  console.log(`[xAPI PUT] /xapi/statements endpoint called`);
   try {
     // Storyline sends statementId as query parameter
     const statementId = req.query.statementId;
@@ -435,7 +594,73 @@ app.put('/xapi/statements', async (req, res) => {
     const statement = req.body;
     statement.id = statementId;
     
+    console.log(`[xAPI Statements PUT] Received statement:`, {
+      statementId,
+      hasActor: !!statement?.actor,
+      hasObject: !!statement?.object,
+      actorMbox: statement?.actor?.mbox,
+      objectId: statement?.object?.id,
+      bodyType: typeof req.body,
+      bodyLength: JSON.stringify(req.body).length
+    });
+    
     const result = await xapiLRS.saveStatement(statement);
+    
+    // Auto-sync progress when statements are saved (same as POST)
+    console.log(`[Progress PUT] Checking statement for sync:`, {
+      hasStatement: !!statement,
+      hasActor: !!statement?.actor,
+      hasObject: !!statement?.object,
+      actorMbox: statement?.actor?.mbox,
+      objectId: statement?.object?.id
+    });
+    
+    if (statement && statement.actor && statement.object) {
+      try {
+        const actor = statement.actor;
+        const activityId = statement.object.id;
+        const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : null;
+        
+        console.log(`[Progress PUT] ✅ Auto-sync triggered: userEmail=${userEmail}, activityId=${activityId}`);
+        
+        if (userEmail && activityId) {
+          // Find course by activityId (handles extended IDs)
+          const course = await findCourseByActivityId(activityId);
+          
+          if (course) {
+            // Use the course's base activityId for syncing (not the extended one from statement)
+            const baseActivityId = course.activityId;
+            console.log(`[Progress PUT] ✅ Found course ${course.courseId} for activityId ${activityId} (base: ${baseActivityId}), syncing progress...`);
+            // Sync progress in background (don't wait for it)
+            progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId)
+              .then(result => {
+                if (result) {
+                  console.log(`[Progress PUT] ✅✅ Sync completed: status=${result.completionStatus}, timeSpent=${result.timeSpent}s, score=${result.score}, progressPercent=${result.progressPercent}`);
+                } else {
+                  console.log(`[Progress PUT] ⚠️ Sync returned null (no statements found)`);
+                }
+              })
+              .catch(err => {
+                console.error('[Progress PUT] ❌ Auto-sync error:', err);
+                console.error('[Progress PUT] ❌ Error stack:', err.stack);
+              });
+          } else {
+            const allCourses = await coursesStorage.getAllCourses();
+            console.warn(`[Progress PUT] ⚠️ No course found for activityId: ${activityId} (base: ${extractBaseActivityId(activityId)})`);
+            console.warn(`[Progress PUT] Available courses:`, allCourses.map(c => ({ id: c.courseId, activityId: c.activityId })));
+          }
+        } else {
+          console.warn(`[Progress PUT] ⚠️ Missing userEmail or activityId: userEmail=${userEmail}, activityId=${activityId}`);
+        }
+      } catch (syncErr) {
+        // Don't fail the statement save if sync fails
+        console.error('[Progress PUT] ❌ Error auto-syncing progress:', syncErr);
+        console.error('[Progress PUT] ❌ Error stack:', syncErr.stack);
+      }
+    } else {
+      console.warn(`[Progress PUT] ⚠️ Statement missing required fields for sync`);
+    }
+    
     res.status(result.status).json(result.data);
   } catch (error) {
     console.error('[xAPI] Error updating statement:', error);
@@ -461,8 +686,16 @@ app.get('/xapi/statements/:id', async (req, res) => {
 app.get('/xapi/activities/state', async (req, res) => {
   try {
     const { activityId, agent, stateId, registration } = req.query;
-    if (!activityId || !agent || !stateId) {
-      return res.status(400).json({ error: 'Missing required parameters: activityId, agent, stateId' });
+    
+    // Log request for debugging
+    if (!agent) {
+      console.warn('[xAPI State GET] Missing agent parameter. Query params:', Object.keys(req.query));
+      return res.status(400).json({ error: 'Missing required parameter: agent' });
+    }
+    
+    if (!activityId || !stateId) {
+      console.warn('[xAPI State GET] Missing required parameters. activityId:', !!activityId, 'stateId:', !!stateId);
+      return res.status(400).json({ error: 'Missing required parameters: activityId, stateId' });
     }
     
     // Parse agent - handle URL encoding
@@ -482,27 +715,79 @@ app.get('/xapi/activities/state', async (req, res) => {
       }
     }
     
+    // Log agent details for debugging
+    if (stateId === 'resume') {
+      console.log(`[xAPI State GET] Resume request:`, {
+        activityId,
+        stateId,
+        registration,
+        agentEmail: agentObj.mbox?.replace('mailto:', ''),
+        agentName: agentObj.name
+      });
+    }
+    
     const result = await xapiLRS.getState(activityId, agentObj, stateId, registration || null);
     if (result.status === 404) {
       // Return empty response for 404 (xAPI spec) - this is normal for first-time access
+      // No resume state exists yet, which is expected
+      console.log(`[xAPI State GET] No state found for stateId: ${stateId}`);
       return res.status(404).send();
     }
-    res.status(result.status).json(result.data);
+    
+    // Log what we're returning
+    const dataLength = typeof result.data === 'string' ? result.data.length : JSON.stringify(result.data).length;
+    const preview = typeof result.data === 'string' ? result.data.substring(0, 200) : JSON.stringify(result.data).substring(0, 200);
+    console.log(`[xAPI State GET] Returning state (${result.status}):`, {
+      stateId,
+      dataType: typeof result.data,
+      dataLength,
+      preview
+    });
+    
+    // Storyline expects the state as-is (string), not as JSON
+    // If it's a string, send it as text/plain, otherwise as JSON
+    if (typeof result.data === 'string') {
+      res.status(result.status).type('text/plain').send(result.data);
+    } else {
+      res.status(result.status).json(result.data);
+    }
   } catch (error) {
     console.error('[xAPI] Error getting state:', error);
-    console.error('[xAPI] Request params:', { activityId: req.query.activityId, stateId: req.query.stateId });
+    console.error('[xAPI] Request params:', { 
+      activityId: req.query.activityId, 
+      stateId: req.query.stateId,
+      hasAgent: !!req.query.agent,
+      registration: req.query.registration
+    });
     res.status(500).json({ error: error.message });
   }
 });
 
 // PUT /xapi/activities/state - Save activity state
+// Note: Raw body parsing middleware is applied above, before express.json()
 app.put('/xapi/activities/state', async (req, res) => {
+  console.log(`[xAPI State PUT Handler] Request received - Content-Type: ${req.headers['content-type']}, Body type: ${typeof req.body}`);
+  
   try {
     const { activityId, agent, stateId, registration } = req.query;
     if (!activityId || !agent || !stateId) {
       return res.status(400).json({ error: 'Missing required parameters: activityId, agent, stateId' });
     }
-    const agentObj = typeof agent === 'string' ? JSON.parse(agent) : agent;
+    
+    // Log what state is being saved
+    if (stateId === 'resume') {
+      console.log(`[xAPI State PUT] Saving resume state:`, {
+        stateId,
+        registration,
+        contentType: req.headers['content-type'],
+        bodyType: typeof req.body,
+        bodyLength: typeof req.body === 'object' ? JSON.stringify(req.body).length : (req.body?.length || 0),
+        bodyPreview: typeof req.body === 'object' ? JSON.stringify(req.body).substring(0, 200) : String(req.body).substring(0, 200),
+        bodyKeys: typeof req.body === 'object' && req.body !== null ? Object.keys(req.body) : 'N/A'
+      });
+    }
+    
+    const agentObj = typeof agent === 'string' ? JSON.parse(decodeURIComponent(agent)) : agent;
     const result = await xapiLRS.saveState(activityId, agentObj, stateId, req.body, registration || null);
     res.status(result.status).send();
   } catch (error) {
@@ -658,19 +943,34 @@ app.get('/api/users/:userId/courses', async (req, res) => {
           // Sync progress from xAPI statements if available
           if (course.activityId) {
             try {
-              await progressStorage.syncProgressFromStatements(
+              console.log(`[Progress] Syncing progress for ${progressUserId} / ${progress.courseId} / ${course.activityId}`);
+              const syncedProgress = await progressStorage.syncProgressFromStatements(
                 progressUserId, 
                 progress.courseId, 
                 course.activityId
               );
-              // Re-fetch updated progress
-              const updated = await progressStorage.getUserProgress(progressUserId);
-              const updatedProgress = updated.find(p => p.courseId === progress.courseId);
-              if (updatedProgress) {
-                progress = updatedProgress;
+              // Use synced progress if available
+              if (syncedProgress) {
+                progress = syncedProgress;
+                console.log(`[Progress] ✅ Synced: status=${progress.completionStatus}, timeSpent=${progress.timeSpent}s, score=${progress.score}, progressPercent=${progress.progressPercent}`);
+              } else {
+                console.log(`[Progress] ⚠️ Sync returned null, using existing progress`);
               }
             } catch (syncError) {
-              console.error('[Progress] Sync error:', syncError);
+              console.error('[Progress] ❌ Sync error:', syncError);
+            }
+          }
+          
+          // Use progressPercent from database (synced or existing), fallback to calculation
+          let progressPercent = progress.progressPercent;
+          if (progressPercent === undefined || progressPercent === null) {
+            // Fallback calculation if not in database
+            if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed') {
+              progressPercent = 100;
+            } else if (progress.completionStatus === 'in_progress') {
+              progressPercent = progress.score || 0;
+            } else {
+              progressPercent = 0;
             }
           }
           
@@ -682,7 +982,9 @@ app.get('/api/users/:userId/courses', async (req, res) => {
             enrollmentStatus: progress.enrollmentStatus,
             completionStatus: progress.completionStatus,
             score: progress.score,
-            timeSpent: progress.timeSpent ? `${Math.floor(progress.timeSpent / 3600)} hours` : undefined,
+            progressPercent: progressPercent, // Use from database
+            timeSpent: progress.timeSpent || 0, // in seconds
+            attempts: progress.attempts || 0,
             enrolledAt: progress.enrolledAt,
             startedAt: progress.startedAt,
             completedAt: progress.completedAt,
@@ -767,12 +1069,19 @@ app.get('/api/admin/courses', async (req, res) => {
     requireAdmin(req);
     const courses = await coursesStorage.getAllCourses();
     
-    // Add stats (TODO: Calculate from enrollments/attempts)
-    const coursesWithStats = courses.map(course => ({
-      ...course,
-      enrollmentCount: 0,
-      attemptCount: 0
-    }));
+    // Calculate stats from progress data
+    const allProgress = await progressStorage.getAllProgress();
+    const coursesWithStats = courses.map(course => {
+      const courseProgress = allProgress.filter(p => p.courseId === course.courseId);
+      const enrollmentCount = courseProgress.filter(p => p.enrollmentStatus === 'enrolled' || p.enrollmentStatus === 'in_progress').length;
+      const attemptCount = courseProgress.reduce((sum, p) => sum + (p.attempts || 0), 0);
+      
+      return {
+        ...course,
+        enrollmentCount,
+        attemptCount
+      };
+    });
     
     res.json(coursesWithStats);
   } catch (error) {
@@ -975,6 +1284,14 @@ app.get('/api/admin/progress', async (req, res) => {
             }
           }
           
+          // Calculate progress percentage
+          let progressPercent = 0;
+          if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed') {
+            progressPercent = 100;
+          } else if (progress.completionStatus === 'in_progress') {
+            progressPercent = progress.score || 0;
+          }
+          
           return {
             userId: progress.userId,
             email: userEmail,
@@ -985,7 +1302,9 @@ app.get('/api/admin/progress', async (req, res) => {
             enrollmentStatus: progress.enrollmentStatus,
             completionStatus: progress.completionStatus,
             score: progress.score,
-            timeSpent: progress.timeSpent ? Math.floor(progress.timeSpent / 3600) : 0, // hours
+            progressPercent: progressPercent,
+            timeSpent: progress.timeSpent || 0, // in seconds (frontend can convert)
+            attempts: progress.attempts || 0,
             enrolledAt: progress.enrolledAt,
             startedAt: progress.startedAt,
             completedAt: progress.completedAt,

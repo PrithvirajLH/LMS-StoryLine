@@ -76,7 +76,7 @@ const Courses = () => {
   return (
     <>
       <Helmet>
-        <title>My Courses | Learn Swift Hub</title>
+        <title>My Courses | Creative Learning</title>
         <meta 
           name="description" 
           content="Access your enrolled courses and continue learning with Articulate Storyline content." 
@@ -246,12 +246,14 @@ const Courses = () => {
                                     <div className="flex items-center justify-between text-xs mb-1">
                                       <span className="text-muted-foreground">Progress</span>
                                       <span className="font-semibold text-primary">
-                                        {course.completionStatus === 'completed' ? '100%' : 
+                                        {course.progressPercent !== undefined ? `${course.progressPercent}%` :
+                                         course.completionStatus === 'completed' ? '100%' : 
                                          course.score ? `${course.score}%` : '0%'}
                                       </span>
                                     </div>
                                     <Progress 
-                                      value={course.score || (course.completionStatus === 'completed' ? 100 : 0)} 
+                                      value={course.progressPercent !== undefined ? course.progressPercent :
+                                             course.score || (course.completionStatus === 'completed' ? 100 : 0)} 
                                       className="h-2" 
                                     />
                                   </div>

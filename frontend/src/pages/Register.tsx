@@ -41,8 +41,8 @@ const Register = () => {
   return (
     <>
       <Helmet>
-        <title>Register | Learn Swift Hub</title>
-        <meta name="description" content="Create your Learn Swift Hub account to start learning." />
+        <title>Register | Creative Learning</title>
+        <meta name="description" content="Create your Creative Learning account to start learning." />
       </Helmet>
 
       <div className="min-h-screen bg-background flex">
@@ -61,7 +61,7 @@ const Register = () => {
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent shadow-glow">
                   <GraduationCap className="h-8 w-8 text-accent-foreground" />
                 </div>
-                <span className="text-3xl font-bold text-primary-foreground">Learn Swift Hub</span>
+                <span className="text-3xl font-bold text-primary-foreground">Creative Learning</span>
               </div>
 
               <h1 className="text-4xl font-bold text-primary-foreground mb-4">
@@ -107,7 +107,7 @@ const Register = () => {
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary shadow-md">
                 <GraduationCap className="h-7 w-7 text-primary-foreground" />
               </div>
-              <span className="text-2xl font-bold text-foreground">Learn Swift Hub</span>
+              <span className="text-2xl font-bold text-foreground">Creative Learning</span>
             </div>
 
             <div className="text-center mb-8">

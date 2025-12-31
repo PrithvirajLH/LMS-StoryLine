@@ -24,6 +24,7 @@ interface CourseProgress {
   enrollmentStatus: string;
   completionStatus: string;
   score?: number;
+  progressPercent?: number;
   timeSpent?: string;
   enrolledAt: string;
   startedAt?: string;
@@ -87,7 +88,7 @@ const ProgressDashboard = () => {
   return (
     <>
       <Helmet>
-        <title>Dashboard | Learn Swift Hub</title>
+        <title>Dashboard | Creative Learning</title>
         <meta name="description" content="Track your learning progress, view enrolled courses, and manage your learning journey." />
       </Helmet>
 
@@ -159,7 +160,10 @@ const ProgressDashboard = () => {
                 ) : enrolledCourses.length > 0 ? (
                   <div className="space-y-4">
                     {enrolledCourses.map((course) => {
-                      const progress = course.score || (course.completionStatus === 'completed' ? 100 : 0);
+                      // Use progressPercent from database (preferred) or fallback to score/completion
+                      const progress = course.progressPercent !== undefined 
+                        ? course.progressPercent 
+                        : (course.score || (course.completionStatus === 'completed' || course.completionStatus === 'passed' ? 100 : 0));
                       return (
                         <Link
                           key={course.courseId}

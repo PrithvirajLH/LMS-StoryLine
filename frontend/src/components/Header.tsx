@@ -13,7 +13,7 @@ export default function Header({ title }: HeaderProps) {
     <header style={styles.header}>
       <div style={styles.leftSection}>
         <h1 style={styles.logo} onClick={() => navigate('/courses')}>
-          🚀 Learn Swift Hub
+          🎓 Creative Learning
         </h1>
         {title && <span style={styles.pageTitle}>{title}</span>}
       </div>
@@ -63,7 +63,8 @@ export default function Header({ title }: HeaderProps) {
           <button
             onClick={() => {
               logout();
-              navigate('/login', { replace: true });
+              // Use window.location for immediate redirect (full page reload)
+              window.location.href = '/login';
             }}
             style={styles.logoutButton}
           >

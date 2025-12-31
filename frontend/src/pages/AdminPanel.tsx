@@ -34,6 +34,11 @@ interface LearnerProgress {
   courseTitle: string;
   enrolledAt: string;
   enrollmentStatus: string;
+  completionStatus?: string;
+  score?: number;
+  progressPercent?: number;
+  timeSpent?: number;
+  attempts?: number;
   startedAt?: string;
   completedAt?: string;
   lastAccessedAt?: string;
@@ -145,7 +150,7 @@ export default function AdminPanel() {
   return (
     <>
       <Helmet>
-        <title>Admin Panel | Learn Swift Hub</title>
+        <title>Admin Panel | Creative Learning</title>
         <meta name="description" content="Manage courses, view learner progress, and configure settings." />
       </Helmet>
 
@@ -337,6 +342,9 @@ export default function AdminPanel() {
                             <TableHead>Course</TableHead>
                             <TableHead>Enrolled</TableHead>
                             <TableHead>Status</TableHead>
+                            <TableHead>Progress</TableHead>
+                            <TableHead>Time Spent</TableHead>
+                            <TableHead>Attempts</TableHead>
                             <TableHead>Started</TableHead>
                             <TableHead>Completed</TableHead>
                           </TableRow>
@@ -357,6 +365,15 @@ export default function AdminPanel() {
                               <TableCell>{item.courseTitle}</TableCell>
                               <TableCell>{new Date(item.enrolledAt).toLocaleDateString()}</TableCell>
                               <TableCell>{item.enrollmentStatus}</TableCell>
+                              <TableCell>
+                                {item.progressPercent !== undefined ? `${item.progressPercent}%` :
+                                 item.completionStatus === 'completed' || item.completionStatus === 'passed' ? '100%' :
+                                 item.score ? `${item.score}%` : '0%'}
+                              </TableCell>
+                              <TableCell>
+                                {item.timeSpent ? `${Math.floor(item.timeSpent / 60)}m ${item.timeSpent % 60}s` : '0s'}
+                              </TableCell>
+                              <TableCell>{item.attempts || 0}</TableCell>
                               <TableCell>
                                 {item.startedAt ? new Date(item.startedAt).toLocaleDateString() : '-'}
                               </TableCell>

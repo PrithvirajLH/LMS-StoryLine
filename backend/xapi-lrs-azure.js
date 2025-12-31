@@ -43,17 +43,15 @@ export async function saveStatement(statement) {
   const rowKey = statement.id.split('/').pop() || statement.id; // Use last part of ID as row key
 
   // Store statement as entity
+  // Only store columns that are used for filtering/queries
+  // Removed: statementId (use rowKey), actor (in statement JSON), timestamp (in statement JSON), stored (in statement JSON)
   const entity = {
     partitionKey,
     rowKey,
-    statementId: statement.id,
-    statement: JSON.stringify(statement), // Store full statement as JSON
-    actor: JSON.stringify(statement.actor),
-    verb: statement.verb?.id || '',
-    object: statement.object?.id || '',
-    timestamp: statement.timestamp,
-    stored: statement.stored,
-    registration: statement.context?.registration || null
+    statement: JSON.stringify(statement), // Store full statement as JSON (contains all data)
+    verb: statement.verb?.id || '', // Used for filtering
+    object: statement.object?.id || '', // Used for filtering
+    registration: statement.context?.registration || null // Used for filtering
   };
 
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
@@ -153,10 +151,13 @@ export async function getStatement(statementId) {
     });
 
     for await (const entity of listEntities) {
-      if (entity.statementId === statementId) {
+      // rowKey should match the statement ID (last part of UUID)
+      // Also check the statement JSON to be sure
+      const statement = JSON.parse(entity.statement);
+      if (statement.id === statementId || entity.rowKey === rowKey) {
         return {
           status: 200,
-          data: JSON.parse(entity.statement)
+          data: statement
         };
       }
     }
@@ -170,22 +171,63 @@ export async function getStatement(statementId) {
 
 /**
  * Save activity state
+ * For resume state, saves both with and without registration for cross-session resume
  */
 export async function saveState(activityId, agent, stateId, state, registration = null) {
   const client = getTableClient('STATE');
   
-  const partitionKey = getStatePartitionKey(activityId, agent);
+  // Normalize agent to ensure consistent partition key
+  const normalizedAgent = typeof agent === 'string' ? JSON.parse(agent) : agent;
+  const partitionKey = getStatePartitionKey(activityId, normalizedAgent);
+  
+  console.log(`[xAPI Azure] Saving state - partitionKey: ${partitionKey}, stateId: ${stateId}, registration: ${registration || 'none'}, stateType: ${typeof state}`);
+  
+  // Storyline sends state as a string (proprietary encoded format), not JSON
+  // Save it as-is - don't try to JSON.stringify it
+  const stateString = typeof state === 'string' ? state : JSON.stringify(state);
+  
+  // For resume/bookmark state, save without registration for persistent resume
+  // This allows resuming across different launch sessions (different registration IDs)
+  if (stateId === 'resume' || stateId === 'bookmark') {
+    // Save without registration (persistent resume)
+    // Only store state data - other fields are in partitionKey/rowKey
+    const entityWithoutReg = {
+      partitionKey,
+      rowKey: stateId, // Just the stateId, no registration
+      state: stateString // Save as string (Storyline's format)
+      // Removed: activityId (in partitionKey), agent (in partitionKey), 
+      //          stateId (in rowKey), registration (not needed), updated (not used)
+    };
+    
+    await retryOperation(() => client.upsertEntity(entityWithoutReg, 'Replace'));
+    console.log(`[xAPI Azure] Saved resume state without registration for persistent resume`);
+    
+    // Also save with registration if provided (for session-specific state)
+    if (registration) {
+      const entityWithReg = {
+        partitionKey,
+        rowKey: `${stateId}|${registration}`,
+        state: stateString // Save as string (Storyline's format)
+        // Removed: activityId (in partitionKey), agent (in partitionKey), 
+        //          stateId (in rowKey), registration (in rowKey), updated (not used)
+      };
+      
+      await retryOperation(() => client.upsertEntity(entityWithReg, 'Replace'));
+      console.log(`[xAPI Azure] Saved resume state with registration ${registration}`);
+    }
+    
+    return { status: 204, data: null };
+  }
+  
+  // For other state types, use registration if provided
   const rowKey = `${stateId}${registration ? `|${registration}` : ''}`;
 
   const entity = {
     partitionKey,
     rowKey,
-    activityId,
-    agent: JSON.stringify(agent),
-    stateId,
-    state: JSON.stringify(state),
-    registration: registration || null,
-    updated: new Date().toISOString()
+    state: stateString // Save as string (Storyline's format)
+    // Removed: activityId (in partitionKey), agent (in partitionKey), 
+    //          stateId (in rowKey), registration (in rowKey), updated (not used)
   };
 
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
@@ -195,11 +237,64 @@ export async function saveState(activityId, agent, stateId, state, registration 
 
 /**
  * Get activity state
+ * For resume state, tries without registration first (since registration changes per launch)
  */
 export async function getState(activityId, agent, stateId, registration = null) {
   const client = getTableClient('STATE');
   
-  const partitionKey = getStatePartitionKey(activityId, agent);
+  // Normalize agent to ensure consistent partition key
+  const normalizedAgent = typeof agent === 'string' ? JSON.parse(agent) : agent;
+  const partitionKey = getStatePartitionKey(activityId, normalizedAgent);
+  
+  console.log(`[xAPI Azure] Getting state - partitionKey: ${partitionKey}, stateId: ${stateId}, registration: ${registration || 'none'}`);
+  
+  // For resume state, try without registration first (registration changes per launch)
+  // This allows resuming across different launch sessions
+  if (stateId === 'resume' || stateId === 'bookmark') {
+    // First try: without registration (persistent resume state)
+    try {
+      const rowKeyWithoutReg = stateId;
+      const entity = await client.getEntity(partitionKey, rowKeyWithoutReg);
+      if (entity && entity.state) {
+        // Storyline state is stored as a string (proprietary format), return as-is
+        // Don't try to parse as JSON - it's not JSON
+        console.log(`[xAPI Azure] Found resume state without registration (${entity.state.length} chars)`);
+        return {
+          status: 200,
+          data: entity.state // Return as string, not parsed
+        };
+      }
+    } catch (error) {
+      // Not found without registration, continue to try with registration
+      if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
+        console.error('[xAPI Azure] Error getting state without registration:', error);
+      }
+    }
+    
+    // Second try: with registration (session-specific state)
+    if (registration) {
+      try {
+        const rowKeyWithReg = `${stateId}|${registration}`;
+        const entity = await client.getEntity(partitionKey, rowKeyWithReg);
+        if (entity && entity.state) {
+          console.log(`[xAPI Azure] Found resume state with registration ${registration} (${entity.state.length} chars)`);
+          return {
+            status: 200,
+            data: entity.state // Return as string, not parsed
+          };
+        }
+      } catch (error) {
+        if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
+          console.error('[xAPI Azure] Error getting state with registration:', error);
+        }
+      }
+    }
+    
+    // Not found
+    return { status: 404, data: null };
+  }
+  
+  // For other state types, use registration if provided
   const rowKey = `${stateId}${registration ? `|${registration}` : ''}`;
 
   try {
@@ -207,9 +302,10 @@ export async function getState(activityId, agent, stateId, registration = null) 
     if (!entity || !entity.state) {
       return { status: 404, data: null };
     }
+    // Return state as string (Storyline's format), not parsed as JSON
     return {
       status: 200,
-      data: JSON.parse(entity.state)
+      data: entity.state
     };
   } catch (error) {
     // Azure Tables returns 404 for missing entities
