@@ -37,6 +37,8 @@ export async function getUserByEmail(email) {
       userId: entity.userId || entity.rowKey,
       email: entity.email,
       name: entity.name,
+      firstName: entity.firstName || (entity.name?.split(' ')[0] || entity.name),
+      lastName: entity.lastName || (entity.name?.split(' ').slice(1).join(' ') || ''),
       password: entity.password, // Hashed password
       role: entity.role || 'learner',
       createdAt: entity.createdAt,
@@ -69,6 +71,8 @@ export async function getUserById(userId) {
         userId: entity.userId || entity.rowKey,
         email: entity.email,
         name: entity.name,
+        firstName: entity.firstName || (entity.name?.split(' ')[0] || entity.name),
+        lastName: entity.lastName || (entity.name?.split(' ').slice(1).join(' ') || ''),
         password: entity.password,
         role: entity.role || 'learner',
         createdAt: entity.createdAt,
@@ -97,12 +101,24 @@ export async function saveUser(user) {
     user.userId = user.email;
   }
   
+  // Combine firstName and lastName if provided, otherwise use name
+  let fullName = user.name;
+  if (user.firstName && user.lastName) {
+    fullName = `${user.firstName.trim()} ${user.lastName.trim()}`.trim();
+  } else if (user.firstName) {
+    fullName = user.firstName.trim();
+  } else if (!fullName) {
+    fullName = user.email.split('@')[0];
+  }
+
   const entity = {
     partitionKey: partitionKey,
     rowKey: rowKey,
     userId: user.userId || user.id || user.email,
     email: user.email,
-    name: user.name || user.email.split('@')[0],
+    name: fullName,
+    firstName: user.firstName || (fullName?.split(' ')[0] || fullName),
+    lastName: user.lastName || (fullName?.split(' ').slice(1).join(' ') || ''),
     password: user.password, // Should be hashed
     role: user.role || 'learner',
     createdAt: user.createdAt || new Date().toISOString(),

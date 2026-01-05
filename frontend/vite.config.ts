@@ -24,6 +24,22 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
       },
+      // Use /course/ (with trailing slash) to avoid matching /courses
+      '/course/': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+    // Ensure SPA routing works - Vite should handle this automatically, but explicitly configure it
+    fs: {
+      strict: false,
+    },
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+      },
     },
   },
 })

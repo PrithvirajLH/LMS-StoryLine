@@ -178,15 +178,6 @@ const CoursePlayer = () => {
           </div>
 
           <div className="flex items-center gap-4">
-            {/* Progress indicator */}
-            <div className="hidden md:flex items-center gap-3">
-              <span className="text-sm text-primary-foreground/70">Progress</span>
-              <div className="w-32">
-                <Progress value={progress} className="h-2" />
-              </div>
-              <span className="text-sm font-medium text-accent">{progress}%</span>
-            </div>
-
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"

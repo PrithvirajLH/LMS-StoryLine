@@ -60,7 +60,7 @@ export function verifyToken(token) {
 /**
  * Register new user
  */
-export async function register(email, password, name) {
+export async function register(email, password, name, firstName, lastName) {
   // Check if user exists
   const existing = await usersStorage.getUserByEmail(email);
   if (existing) {
@@ -73,6 +73,8 @@ export async function register(email, password, name) {
     email: email.toLowerCase(), // Normalize email
     password: hashedPassword,
     name: name || email.split('@')[0],
+    firstName: firstName,
+    lastName: lastName,
     role: 'learner'
   };
 
@@ -84,6 +86,8 @@ export async function register(email, password, name) {
     userId: savedUser.userId,
     email: savedUser.email,
     name: savedUser.name,
+    firstName: savedUser.firstName,
+    lastName: savedUser.lastName,
     role: savedUser.role
   };
 
@@ -93,8 +97,8 @@ export async function register(email, password, name) {
       userId: user.id,
       email: user.email, 
       name: user.name,
-      firstName: user.name?.split(' ')[0] || user.name,
-      lastName: user.name?.split(' ').slice(1).join(' ') || '',
+      firstName: user.firstName || (user.name?.split(' ')[0] || user.name),
+      lastName: user.lastName || (user.name?.split(' ').slice(1).join(' ') || ''),
       role: user.role,
       isAdmin: user.role === 'admin'
     }, 
@@ -122,8 +126,8 @@ export async function login(email, password) {
       userId: user.userId || user.id, // Also include userId for frontend compatibility
       email: user.email, 
       name: user.name,
-      firstName: user.name?.split(' ')[0] || user.name,
-      lastName: user.name?.split(' ').slice(1).join(' ') || '',
+      firstName: user.firstName || (user.name?.split(' ')[0] || user.name),
+      lastName: user.lastName || (user.name?.split(' ').slice(1).join(' ') || ''),
       role: user.role,
       isAdmin: user.role === 'admin' // Convert role to isAdmin boolean for frontend
     },

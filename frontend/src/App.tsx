@@ -11,6 +11,7 @@ import CoursePlayer from "./pages/CoursePlayer";
 import ProgressDashboard from "./pages/ProgressDashboard";
 import AdminPanel from "./pages/AdminPanel";
 import ProtectedRoute from "./components/ProtectedRoute";
+import { MainLayout } from "./components/layout/MainLayout";
 import { isAuthenticated } from "./services/auth";
 import NotFound from "./pages/NotFound";
 
@@ -36,7 +37,9 @@ const App = () => (
               path="/courses"
               element={
                 <ProtectedRoute>
-                  <Courses />
+                  <MainLayout>
+                    <Courses />
+                  </MainLayout>
                 </ProtectedRoute>
               }
             />
@@ -44,7 +47,9 @@ const App = () => (
               path="/player/:courseId"
               element={
                 <ProtectedRoute>
-                  <CoursePlayer />
+                  <MainLayout>
+                    <CoursePlayer />
+                  </MainLayout>
                 </ProtectedRoute>
               }
             />
@@ -52,7 +57,9 @@ const App = () => (
               path="/dashboard"
               element={
                 <ProtectedRoute>
-                  <ProgressDashboard />
+                  <MainLayout>
+                    <ProgressDashboard />
+                  </MainLayout>
                 </ProtectedRoute>
               }
             />
@@ -60,7 +67,9 @@ const App = () => (
               path="/admin"
               element={
                 <ProtectedRoute requireAdmin>
-                  <AdminPanel />
+                  <MainLayout>
+                    <AdminPanel />
+                  </MainLayout>
                 </ProtectedRoute>
               }
             />

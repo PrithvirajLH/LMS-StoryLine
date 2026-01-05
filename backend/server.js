@@ -111,16 +111,48 @@ app.get('/api/courses', async (req, res) => {
     const user = verifyAuth(req);
     const courses = await coursesStorage.getAllCourses();
     
+    // Get user's progress if authenticated
+    let userProgress = [];
+    if (user && user.email) {
+      try {
+        userProgress = await progressStorage.getUserProgress(user.email);
+      } catch (progressError) {
+        console.error('[Courses] Error getting user progress:', progressError);
+        // Continue without progress data
+      }
+    }
+    
     // Return courses with enrollment status if user is authenticated
-    const coursesWithEnrollment = courses.map(course => ({
-      courseId: course.courseId,
-      title: course.title,
-      description: course.description,
-      thumbnailUrl: course.thumbnailUrl,
-      isEnrolled: user ? true : false, // For now, all authenticated users are "enrolled"
-      enrollmentStatus: user ? 'enrolled' : undefined,
-      activityId: course.activityId
-    }));
+    const coursesWithEnrollment = courses.map(course => {
+      const progress = userProgress.find(p => p.courseId === course.courseId);
+      const isEnrolled = progress && (progress.enrollmentStatus === 'enrolled' || progress.enrollmentStatus === 'in_progress');
+      
+      // Calculate progress percent - ensure it's always a number
+      let progressPercent = 0;
+      if (progress) {
+        if (progress.progressPercent !== undefined && progress.progressPercent !== null) {
+          progressPercent = Number(progress.progressPercent) || 0;
+        } else if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed') {
+          progressPercent = 100;
+        } else if (progress.completionStatus === 'in_progress') {
+          progressPercent = Number(progress.score) || 0;
+        }
+      }
+      
+      return {
+        courseId: course.courseId,
+        title: course.title,
+        description: course.description || '',
+        thumbnailUrl: course.thumbnailUrl || '',
+        isEnrolled: isEnrolled || false,
+        enrollmentStatus: progress?.enrollmentStatus || undefined,
+        completionStatus: progress?.completionStatus || undefined,
+        progressPercent: progressPercent,
+        score: progress?.score !== undefined && progress?.score !== null ? Number(progress.score) : undefined,
+        completedAt: progress?.completedAt || undefined,
+        activityId: course.activityId
+      };
+    });
 
     res.json(coursesWithEnrollment);
   } catch (error) {
@@ -277,11 +309,15 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { email, password, firstName, lastName, name } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    const result = await auth.register(email, password, name);
+    // Combine firstName and lastName if provided, otherwise use name
+    const fullName = (firstName && lastName) 
+      ? `${firstName.trim()} ${lastName.trim()}`.trim()
+      : (name || email.split('@')[0]);
+    const result = await auth.register(email, password, fullName, firstName, lastName);
     res.json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -425,7 +461,18 @@ app.get('/course/*', async (req, res, next) => {
     
     // Set headers
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+    
+    // Different cache strategies for different file types
+    // Images: shorter cache (5 min) to allow updates, or use ETag for better invalidation
+    // Other files: longer cache (1 hour) for performance
+    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].includes(ext);
+    if (isImage) {
+      // For images, use shorter cache or allow revalidation
+      res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate'); // 5 minutes, must revalidate
+    } else {
+      // For other files, cache longer
+      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+    }
     
     // Pipe stream to response
     stream.pipe(res);
@@ -1285,11 +1332,20 @@ app.get('/api/admin/progress', async (req, res) => {
           }
           
           // Calculate progress percentage
+          // Priority: 1) Use progressPercent from database, 2) Check completion status/date, 3) Use score, 4) Default to 0
           let progressPercent = 0;
-          if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed') {
+          if (progress.progressPercent !== undefined && progress.progressPercent !== null) {
+            // Use progressPercent from database if available
+            progressPercent = Number(progress.progressPercent);
+          } else if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed' || progress.completedAt) {
+            // If completed (by status or date), show 100%
             progressPercent = 100;
-          } else if (progress.completionStatus === 'in_progress') {
-            progressPercent = progress.score || 0;
+          } else if (progress.completionStatus === 'in_progress' && progress.score !== undefined && progress.score !== null) {
+            // If in progress, use score if available
+            progressPercent = Number(progress.score);
+          } else if (progress.score !== undefined && progress.score !== null) {
+            // Fallback to score if available
+            progressPercent = Number(progress.score);
           }
           
           return {

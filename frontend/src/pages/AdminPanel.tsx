@@ -366,9 +366,9 @@ export default function AdminPanel() {
                               <TableCell>{new Date(item.enrolledAt).toLocaleDateString()}</TableCell>
                               <TableCell>{item.enrollmentStatus}</TableCell>
                               <TableCell>
-                                {item.progressPercent !== undefined ? `${item.progressPercent}%` :
-                                 item.completionStatus === 'completed' || item.completionStatus === 'passed' ? '100%' :
-                                 item.score ? `${item.score}%` : '0%'}
+                                {item.completedAt || item.completionStatus === 'completed' || item.completionStatus === 'passed' ? '100%' :
+                                 item.progressPercent !== undefined && item.progressPercent !== null ? `${item.progressPercent}%` :
+                                 item.score !== undefined && item.score !== null ? `${item.score}%` : '0%'}
                               </TableCell>
                               <TableCell>
                                 {item.timeSpent ? `${Math.floor(item.timeSpent / 60)}m ${item.timeSpent % 60}s` : '0s'}
