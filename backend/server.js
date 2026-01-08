@@ -424,8 +424,37 @@ app.get('/course/*', async (req, res, next) => {
   try {
     // Get file path (everything after /course/)
     // Express wildcard routes: req.params[0] or use req.path
-    const fullPath = req.path; // e.g., "/course/index_lms.html"
-    const filePath = fullPath.replace(/^\/course\//, '') || 'index_lms.html';
+    // Note: req.path is URL-decoded by Express, but req.url/req.originalUrl are not
+    // Use req.path for the decoded path, but also check req.originalUrl if needed
+    const fullPath = req.path; // e.g., "/course/index_lms.html" (already URL-decoded by Express)
+    let filePath = fullPath.replace(/^\/course\//, '') || 'index_lms.html';
+    
+    // Ensure proper URL decoding (Express should handle req.path, but be explicit for safety)
+    // Also try decoding in case there's any remaining encoding
+    try {
+      // If filePath still contains % encoding, decode it
+      if (filePath.includes('%')) {
+        filePath = decodeURIComponent(filePath);
+      }
+    } catch (e) {
+      // If decoding fails, use as-is
+      console.log(`[Course File] URL decode warning: ${e.message}, using path as-is: ${filePath}`);
+    }
+    
+    // Fix duplicated path segments (e.g., "coursePath/coursePath/file" -> "coursePath/file")
+    // This can happen when course JavaScript constructs paths incorrectly
+    const originalFilePath = filePath;
+    const pathParts = filePath.split('/').filter(p => p !== ''); // Remove empty parts
+    const deduplicatedParts = [];
+    for (let i = 0; i < pathParts.length; i++) {
+      const part = pathParts[i];
+      // Skip if this part is the same as the previous part (consecutive duplicate)
+      if (i > 0 && pathParts[i - 1] === part) {
+        continue;
+      }
+      deduplicatedParts.push(part);
+    }
+    filePath = deduplicatedParts.join('/');
     
     // Security: prevent directory traversal
     if (filePath.includes('..') || path.isAbsolute(filePath)) {
@@ -456,8 +485,69 @@ app.get('/course/*', async (req, res, next) => {
 
     const contentType = contentTypes[ext] || 'application/octet-stream';
 
-    // Get blob stream from Azure
-    const stream = await blobStorage.getBlobStream(filePath);
+    // Get blob stream from Azure with fallback to root level
+    let stream;
+    let actualFilePath = filePath;
+    try {
+      stream = await blobStorage.getBlobStream(filePath);
+    } catch (error) {
+      // If file not found and path contains '/', try multiple fallback strategies
+      if (error.message.includes('not found') && filePath.includes('/')) {
+        const fileName = path.basename(filePath);
+        
+        // Strategy 1: Try root level (just filename)
+        try {
+          stream = await blobStorage.getBlobStream(fileName);
+          actualFilePath = fileName;
+        } catch (fallbackError1) {
+          // Strategy 2: Try with duplicated path (in case file is stored with duplication in blob storage)
+          const pathParts = filePath.split('/').filter(p => p !== '');
+          let found = false;
+          if (pathParts.length > 0) {
+            const firstPart = pathParts[0];
+            const duplicatedPath = `${firstPart}/${firstPart}/${pathParts.slice(1).join('/')}`;
+            try {
+              stream = await blobStorage.getBlobStream(duplicatedPath);
+              actualFilePath = duplicatedPath;
+              found = true;
+            } catch (fallbackError2) {
+              // Strategy 3: Try with different file extension (.jpg vs .png, etc.)
+              const ext = path.extname(filePath);
+              const baseName = path.basename(filePath, ext);
+              const dirPath = path.dirname(filePath);
+              const altExtensions = ['.jpg', '.jpeg', '.png', '.gif'];
+              for (const altExt of altExtensions) {
+                if (altExt !== ext) {
+                  const altPath = dirPath === '.' ? `${baseName}${altExt}` : `${dirPath}/${baseName}${altExt}`;
+                  try {
+                    stream = await blobStorage.getBlobStream(altPath);
+                    actualFilePath = altPath;
+                    found = true;
+                    break;
+                  } catch (altError) {
+                    // Try duplicated path with alternative extension
+                    const duplicatedAltPath = `${firstPart}/${firstPart}/${pathParts.slice(1, -1).join('/')}/${baseName}${altExt}`.replace(/\/+/g, '/');
+                    try {
+                      stream = await blobStorage.getBlobStream(duplicatedAltPath);
+                      actualFilePath = duplicatedAltPath;
+                      found = true;
+                      break;
+                    } catch (dupAltError) {
+                      // Continue to next extension
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if (!found) {
+            throw error; // Re-throw original error if all fallbacks fail
+          }
+        }
+      } else {
+        throw error; // Re-throw if not a "not found" error or path doesn't contain '/'
+      }
+    }
     
     // Set headers
     res.setHeader('Content-Type', contentType);
@@ -485,7 +575,15 @@ app.get('/course/*', async (req, res, next) => {
     });
   } catch (error) {
     if (error.message.includes('not found')) {
-      return res.status(404).json({ error: 'File not found' });
+      const requestedPath = req.path.replace(/^\/course\//, '') || 'index_lms.html';
+      console.error(`[Course File] ❌ File not found: ${requestedPath}`);
+      console.error(`[Course File] 💡 Tried paths: ${requestedPath} and ${path.basename(requestedPath)}`);
+      console.error(`[Course File] 💡 Make sure course files are uploaded to blob storage`);
+      return res.status(404).json({ 
+        error: 'File not found',
+        message: `Course file not found. Please ensure course files are uploaded to blob storage.`,
+        triedPaths: [requestedPath, path.basename(requestedPath)]
+      });
     }
     console.error(`[Blob Storage] Error serving file: ${req.params[0]}`, error);
     if (!res.headersSent) {
@@ -1172,6 +1270,120 @@ app.get('/api/admin/extract-activity-id', async (req, res) => {
   }
 });
 
+// GET /api/admin/find-thumbnail - Find thumbnail image in course folder
+app.get('/api/admin/find-thumbnail', async (req, res) => {
+  try {
+    requireAdmin(req);
+    const { coursePath } = req.query;
+    
+    if (!coursePath) {
+      return res.status(400).json({ error: 'coursePath query parameter is required' });
+    }
+    
+    // Common thumbnail file names and locations to search
+    const thumbnailPatterns = [
+      'mobile/poster.jpg',
+      'mobile/poster.png',
+      'mobile/poster.webp',
+      'mobile/poster_*.jpg',
+      'poster.jpg',
+      'poster.png',
+      'poster.webp',
+      'thumbnail.jpg',
+      'thumbnail.png',
+      'thumbnail.webp',
+      'thumb.jpg',
+      'thumb.png'
+    ];
+    
+    try {
+      // List all files in the course folder
+      const allBlobs = await blobStorage.listBlobs(coursePath);
+      
+      // Search for thumbnail files (case-insensitive)
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
+      const foundThumbnails = [];
+      
+      for (const blob of allBlobs) {
+        const blobName = blob.name.toLowerCase();
+        const blobPath = blob.name;
+        const fileName = blobPath.split('/').pop().toLowerCase();
+        
+        // Check if it's an image file
+        const isImage = imageExtensions.some(ext => blobName.endsWith(ext));
+        
+        if (isImage) {
+          // Check if filename contains common thumbnail keywords
+          const isThumbnail = fileName.includes('poster') || 
+                             fileName.includes('thumbnail') || 
+                             fileName.includes('thumb') ||
+                             (blobName.includes('mobile') && fileName.includes('poster'));
+          
+          if (isThumbnail) {
+            foundThumbnails.push({
+              path: `/course/${blobPath}`,
+              name: blobPath.split('/').pop(),
+              size: blob.size
+            });
+          }
+        }
+      }
+      
+      // Sort by priority: prefer thumbnail.jpg first, then mobile/poster.jpg, then other poster files
+      foundThumbnails.sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        const aPath = a.path.toLowerCase();
+        const bPath = b.path.toLowerCase();
+        
+        // Priority 0: thumbnail.jpg (exact match)
+        const aPriority = aName === 'thumbnail.jpg' ? 0 :
+                          aName === 'thumbnail.png' ? 0 :
+                          aName === 'thumbnail.webp' ? 0 :
+                          // Priority 1: mobile/poster.jpg
+                          aPath.includes('mobile/poster') ? 1 :
+                          // Priority 2: other poster files
+                          aName.includes('poster') ? 2 :
+                          // Priority 3: other thumbnail files
+                          aName.includes('thumbnail') ? 3 : 4;
+        
+        const bPriority = bName === 'thumbnail.jpg' ? 0 :
+                          bName === 'thumbnail.png' ? 0 :
+                          bName === 'thumbnail.webp' ? 0 :
+                          bPath.includes('mobile/poster') ? 1 :
+                          bName.includes('poster') ? 2 :
+                          bName.includes('thumbnail') ? 3 : 4;
+        
+        return aPriority - bPriority;
+      });
+      
+      if (foundThumbnails.length > 0) {
+        res.json({ 
+          thumbnailUrl: foundThumbnails[0].path,
+          found: true,
+          allMatches: foundThumbnails,
+          coursePath 
+        });
+      } else {
+        res.json({ 
+          thumbnailUrl: null,
+          found: false,
+          message: 'No thumbnail images found. Common locations: thumbnail.jpg, mobile/poster.jpg, poster.jpg',
+          coursePath 
+        });
+      }
+    } catch (error) {
+      if (error.message.includes('not found')) {
+        return res.status(404).json({ error: `Course folder not found: ${coursePath}. Make sure course files are uploaded to blob storage.` });
+      }
+      throw error;
+    }
+  } catch (error) {
+    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
+    res.status(status).json({ error: error.message });
+  }
+});
+
 // POST /api/admin/courses - Create new course
 app.post('/api/admin/courses', async (req, res) => {
   try {
@@ -1201,12 +1413,9 @@ app.post('/api/admin/courses', async (req, res) => {
       thumbnailUrl: thumbnailUrl || '/course/mobile/poster.jpg',
       activityId,
       launchFile,
-      // Use course title as folder name (sanitized)
-      coursePath: coursePath || title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .substring(0, 50),
+      // Default to empty string (root level) if coursePath not provided
+      // Files are typically uploaded to root level in blob storage
+      coursePath: coursePath || '',
       modules: []
     };
 
@@ -1348,6 +1557,18 @@ app.get('/api/admin/progress', async (req, res) => {
             progressPercent = Number(progress.score);
           }
           
+          // Infer startedAt if missing but course has been started
+          let startedAt = progress.startedAt;
+          if (!startedAt) {
+            const hasProgress = (progressPercent > 0) || 
+                               (progress.timeSpent && progress.timeSpent > 0) ||
+                               (progress.completionStatus && progress.completionStatus !== 'not_started');
+            if (hasProgress && progress.enrolledAt) {
+              // Use enrolledAt as a reasonable approximation for when the course was started
+              startedAt = progress.enrolledAt;
+            }
+          }
+          
           return {
             userId: progress.userId,
             email: userEmail,
@@ -1362,7 +1583,7 @@ app.get('/api/admin/progress', async (req, res) => {
             timeSpent: progress.timeSpent || 0, // in seconds (frontend can convert)
             attempts: progress.attempts || 0,
             enrolledAt: progress.enrolledAt,
-            startedAt: progress.startedAt,
+            startedAt: startedAt,
             completedAt: progress.completedAt,
             lastAccessedAt: progress.lastAccessedAt
           };

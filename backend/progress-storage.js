@@ -151,6 +151,17 @@ export async function updateProgress(userId, courseId, updates) {
     updated.progressPercent = typeof updates.progressPercent === 'number' ? updates.progressPercent : parseFloat(updates.progressPercent) || 0;
   }
   
+  // Set startedAt if missing but course has been started (indicated by progress/time/status)
+  if (!updated.startedAt) {
+    const hasProgress = (updated.progressPercent && updated.progressPercent > 0) || 
+                       (updated.timeSpent && updated.timeSpent > 0) ||
+                       (updated.completionStatus && updated.completionStatus !== 'not_started');
+    if (hasProgress) {
+      // Use enrolledAt as fallback if available, otherwise use current time
+      updated.startedAt = updated.enrolledAt || new Date().toISOString();
+    }
+  }
+  
   const entity = {
     partitionKey: partitionKey, // Use the string-converted userId
     rowKey: rowKey, // Use the string-converted courseId
@@ -250,31 +261,40 @@ export async function calculateProgressFromStatements(userId, courseId, activity
     // Normalize userId to email format for xAPI query
     const userEmail = userId.includes('@') ? userId : `${userId}@example.com`;
     
-    // Query xAPI statements for this user and course
+    // Query ALL xAPI statements for this user (without activity filter)
+    // Storyline sends statements for slide activities (e.g., baseActivityId/slideId)
+    // We need to aggregate all statements that start with the base activity ID
     const result = await xapiLRS.queryStatements({
       agent: {
         objectType: 'Agent',
         mbox: `mailto:${userEmail}`
       },
-      activity: activityId,
+      // Don't filter by activity - we'll filter in JavaScript to include all slide activities
       limit: 1000
     });
     
     // Extract statements array from result
     // queryStatements returns: { status: 200, data: { statements: [...], more: '...' } }
-    const statements = result?.data?.statements || [];
+    const allStatements = result?.data?.statements || [];
     
     // Safety check: ensure statements is an array
-    if (!Array.isArray(statements)) {
-      console.error('[Progress Storage] Invalid statements format:', typeof statements, statements);
+    if (!Array.isArray(allStatements)) {
+      console.error('[Progress Storage] Invalid statements format:', typeof allStatements, allStatements);
       return null;
     }
+    
+    // Filter statements to include only those for this course (base activity ID or slide activities)
+    // Storyline activities: baseActivityId or baseActivityId/slideId
+    const statements = allStatements.filter(s => {
+      const objectId = s.object?.id || '';
+      return objectId === activityId || objectId.startsWith(activityId + '/');
+    });
     
     if (statements.length === 0) {
       return null;
     }
     
-    console.log(`[Progress Storage] Found ${statements.length} statements for ${userEmail} / ${activityId}`);
+    console.log(`[Progress Storage] Found ${statements.length} statements (out of ${allStatements.length} total) for ${userEmail} / ${activityId}`);
     
     // Analyze statements to determine progress
     let completionStatus = 'not_started';
@@ -283,14 +303,27 @@ export async function calculateProgressFromStatements(userId, courseId, activity
     let startedAt = null;
     let completedAt = null;
     
-    // Find initial statement (started)
+    // If there are any statements, the user has started the course
+    // This handles cases where Storyline doesn't send initialized/launched verbs
+    if (statements.length > 0) {
+      completionStatus = 'in_progress';
+      // Use the earliest statement timestamp as startedAt
+      const sortedByTime = [...statements].sort((a, b) => {
+        const timeA = new Date(a.timestamp || a.stored || 0).getTime();
+        const timeB = new Date(b.timestamp || b.stored || 0).getTime();
+        return timeA - timeB;
+      });
+      startedAt = sortedByTime[0]?.timestamp || sortedByTime[0]?.stored || null;
+    }
+    
+    // Find initial statement (started) - prefer explicit initialized/launched verbs if they exist
     const initialStatement = statements.find(s => 
       s.verb?.id === 'http://adlnet.gov/expapi/verbs/initialized' ||
       s.verb?.id === 'http://adlnet.gov/expapi/verbs/launched'
     );
     if (initialStatement) {
-      completionStatus = 'in_progress';
-      startedAt = initialStatement.timestamp || initialStatement.stored;
+      // Use the explicit initialized/launched timestamp if available
+      startedAt = initialStatement.timestamp || initialStatement.stored || startedAt;
     }
     
     // Find completion statement

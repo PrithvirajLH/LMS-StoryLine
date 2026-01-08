@@ -12,8 +12,16 @@ export async function getAllCourses() {
   try {
     const client = getTableClient('COURSES');
     const courses = [];
+    const courseIds = new Set(); // Track unique course IDs to prevent duplicates
     
     for await (const entity of client.listEntities()) {
+      // Skip if we've already seen this courseId (duplicate across partitions)
+      if (courseIds.has(entity.rowKey)) {
+        console.log(`[Courses Storage] Skipping duplicate course: ${entity.rowKey} (partition: ${entity.partitionKey})`);
+        continue;
+      }
+      
+      courseIds.add(entity.rowKey);
       courses.push({
         courseId: entity.rowKey,
         title: entity.title,
@@ -138,24 +146,29 @@ export async function saveCourse(course) {
 export async function deleteCourse(courseId) {
   const client = getTableClient('COURSES');
   
-  try {
-    // Try both partition keys
+  let deleted = false;
+  
+  // Delete from both partition keys to ensure complete removal
+  // (courses might exist in either partition due to migration)
+  for (const partitionKey of ['course', 'courses']) {
     try {
-      await client.deleteEntity('course', courseId);
+      await client.deleteEntity(partitionKey, courseId);
+      deleted = true;
+      console.log(`[Courses Storage] Course deleted from '${partitionKey}' partition: ${courseId}`);
     } catch (error) {
-      if (error.statusCode === 404 || error.code === 'ResourceNotFound') {
-        await client.deleteEntity('courses', courseId);
-      } else {
+      // Ignore 404 errors (course doesn't exist in this partition)
+      if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
         throw error;
       }
     }
+  }
+  
+  if (deleted) {
     console.log(`[Courses Storage] Course deleted: ${courseId}`);
     return true;
-  } catch (error) {
-    if (error.statusCode === 404 || error.code === 'ResourceNotFound') {
-      return false; // Already deleted
-    }
-    throw error;
+  } else {
+    // Course wasn't found in any partition
+    return false;
   }
 }
 

@@ -23,9 +23,12 @@ interface Course {
   completedAt?: string;
 }
 
+type FilterType = 'all' | 'my';
+
 const Courses = () => {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
+  const [filter, setFilter] = useState<FilterType>('all');
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -50,6 +53,16 @@ const Courses = () => {
   const filteredCourses = courses.filter((course) => {
     const matchesSearch = course.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       course.description?.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    // Filter by "My Courses" if selected
+    if (filter === 'my') {
+      const isEnrolled = course.isEnrolled || course.enrollmentStatus === 'enrolled';
+      const hasProgress = course.completionStatus !== undefined && course.completionStatus !== null;
+      if (!isEnrolled && !hasProgress) {
+        return false;
+      }
+    }
+    
     return matchesSearch;
   });
 
@@ -79,8 +92,8 @@ const Courses = () => {
 
       <div className="flex flex-col h-full">
         {/* Top Header */}
-        <header className="p-6 border-b border-border/50 bg-card/50 backdrop-blur-sm flex items-center h-[81px]">
-          <div className="flex items-center w-full">
+        <header className="p-6 border-b border-border/50 bg-card/50 backdrop-blur-sm flex items-center min-h-[81px]">
+          <div className="flex items-center justify-between w-full gap-4">
             {/* Search Input */}
             <div className="relative max-w-md w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -91,6 +104,30 @@ const Courses = () => {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10 h-9 rounded-full border-border/50 bg-background"
               />
+            </div>
+            
+            {/* Filter Toggle */}
+            <div className="flex items-center gap-2 bg-muted/50 rounded-full p-1 border border-border/50">
+              <button
+                onClick={() => setFilter('all')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  filter === 'all'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                All Courses
+              </button>
+              <button
+                onClick={() => setFilter('my')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  filter === 'my'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                My Courses
+              </button>
             </div>
           </div>
         </header>
@@ -226,14 +263,23 @@ const Courses = () => {
             ) : (
               <div className="text-center py-16">
                 <p className="text-muted-foreground text-lg mb-4">
-                  No courses found matching your search
+                  {filter === 'my' 
+                    ? searchQuery 
+                      ? 'No enrolled courses found matching your search'
+                      : 'You haven\'t enrolled in any courses yet'
+                    : searchQuery
+                      ? 'No courses found matching your search'
+                      : 'No courses available'
+                  }
                 </p>
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="px-4 py-2 rounded-full text-sm font-medium bg-secondary hover:bg-secondary/80 text-foreground border border-border/50 transition-colors"
-                >
-                  Clear Search
-                </button>
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="px-4 py-2 rounded-full text-sm font-medium bg-secondary hover:bg-secondary/80 text-foreground border border-border/50 transition-colors"
+                  >
+                    Clear Search
+                  </button>
+                )}
               </div>
             )}
           </div>

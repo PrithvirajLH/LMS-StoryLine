@@ -766,3 +766,5 @@ See `frontend/src/index.css` for full token definitions. Key tokens:
 
 **END OF UX ARCHITECTURE DOCUMENT**
 
+
+

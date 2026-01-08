@@ -132,7 +132,7 @@ const ProgressDashboard = () => {
         <meta name="description" content="Track your learning progress, view enrolled courses, and manage your learning journey." />
       </Helmet>
 
-      <div>
+      <div style={{ marginTop: '0px', marginBottom: '0px', paddingLeft: '15px', paddingTop: '10px', paddingRight: '15px' }}>
             {/* Header */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -232,11 +232,11 @@ const ProgressDashboard = () => {
                             }`}>
                               <div className="flex gap-4">
                                 {course.thumbnailUrl ? (
-                                  <div className="relative flex-shrink-0">
+                                  <div className="relative flex-shrink-0 overflow-hidden rounded-xl w-28 h-28 md:w-36 md:h-24">
                                     <img
                                       src={course.thumbnailUrl}
                                       alt={course.title}
-                                      className="w-28 h-28 md:w-36 md:h-24 rounded-xl object-cover transition-transform duration-300 group-hover:scale-105"
+                                      className="w-full h-full rounded-xl object-cover transition-transform duration-300 group-hover:scale-105"
                                     />
                                     {isInProgress && (
                                       <div className="absolute -top-2 -right-2 w-6 h-6 bg-primary rounded-full flex items-center justify-center border-2 border-card shadow-lg">

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { Navbar } from "@/components/layout/Navbar";
-import { Footer } from "@/components/layout/Footer";
+import { BookOpen, Users, UserPlus, Trophy } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import api from "../services/api";
 import { getUser } from "../services/auth";
@@ -45,9 +47,12 @@ interface LearnerProgress {
 }
 
 export default function AdminPanel() {
-  const [activeTab, setActiveTab] = useState<'courses' | 'progress' | 'settings'>('courses');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'courses' | 'progress' | 'settings'>('dashboard');
   const [courses, setCourses] = useState<Course[]>([]);
   const [progress, setProgress] = useState<LearnerProgress[]>([]);
+  const [filteredProgress, setFilteredProgress] = useState<LearnerProgress[]>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<string>('all');
+  const [filterCompleted, setFilterCompleted] = useState<boolean>(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showCourseForm, setShowCourseForm] = useState(false);
@@ -65,9 +70,34 @@ export default function AdminPanel() {
     if (activeTab === 'courses') {
       loadCourses();
     } else if (activeTab === 'progress') {
+      // Load both courses and progress for the filter
+      loadCourses();
+      loadProgress();
+    } else if (activeTab === 'dashboard') {
+      // Load both courses and progress for dashboard stats
+      loadCourses();
       loadProgress();
     }
   }, [activeTab]);
+
+  // Filter progress when course selection or progress data changes
+  useEffect(() => {
+    let filtered = progress;
+    
+    // Filter by course
+    if (selectedCourseId !== 'all') {
+      filtered = filtered.filter(p => p.courseId === selectedCourseId);
+    }
+    
+    // Filter by completion status
+    if (filterCompleted) {
+      filtered = filtered.filter(p => 
+        p.completionStatus === 'completed' || p.completionStatus === 'passed'
+      );
+    }
+    
+    setFilteredProgress(filtered);
+  }, [selectedCourseId, filterCompleted, progress]);
 
   const loadCourses = async () => {
     try {
@@ -87,6 +117,8 @@ export default function AdminPanel() {
       setLoading(true);
       const response = await api.get('/api/admin/progress');
       setProgress(response.data);
+      // Initialize filtered progress with all data
+      setFilteredProgress(response.data);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to load progress');
       toast.error(err.response?.data?.error || 'Failed to load progress');
@@ -168,11 +200,188 @@ export default function AdminPanel() {
             )}
 
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-6">
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-4">
+                <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
                 <TabsTrigger value="courses">Courses</TabsTrigger>
                 <TabsTrigger value="progress">Learner Progress</TabsTrigger>
                 <TabsTrigger value="settings">Settings</TabsTrigger>
               </TabsList>
+
+              <TabsContent value="dashboard" className="space-y-6">
+                <h2 className="text-2xl font-bold text-foreground">Dashboard Overview</h2>
+                
+                {loading ? (
+                  <div className="text-center py-16">
+                    <p className="text-muted-foreground">Loading dashboard data...</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Statistics Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                      {/* Total Courses */}
+                      <Card>
+                        <CardContent className="p-6">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Total Courses</p>
+                              <p className="text-3xl font-bold text-foreground mt-2">{courses.length}</p>
+                            </div>
+                            <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+                              <BookOpen className="h-6 w-6 text-primary" />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Total Learners */}
+                      <Card>
+                        <CardContent className="p-6">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Total Learners</p>
+                              <p className="text-3xl font-bold text-foreground mt-2">
+                                {new Set(progress.map(p => p.userId)).size}
+                              </p>
+                            </div>
+                            <div className="h-12 w-12 rounded-full bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
+                              <Users className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Total Enrollments */}
+                      <Card>
+                        <CardContent className="p-6">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Total Enrollments</p>
+                              <p className="text-3xl font-bold text-foreground mt-2">
+                                {progress.filter(p => p.enrollmentStatus === 'enrolled' || p.enrollmentStatus === 'in_progress').length}
+                              </p>
+                            </div>
+                            <div className="h-12 w-12 rounded-full bg-accent/10 flex items-center justify-center">
+                              <UserPlus className="h-6 w-6 text-accent" />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Total Completions */}
+                      <Card>
+                        <CardContent className="p-6">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Total Completions</p>
+                              <p className="text-3xl font-bold text-foreground mt-2">
+                                {progress.filter(p => p.completionStatus === 'completed' || p.completionStatus === 'passed').length}
+                              </p>
+                            </div>
+                            <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/20 flex items-center justify-center">
+                              <Trophy className="h-6 w-6 text-green-600 dark:text-green-400" />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Additional Stats */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {/* Active Learners */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-lg">Active Learners</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-3xl font-bold text-foreground">
+                            {progress.filter(p => p.completionStatus === 'in_progress').length}
+                          </p>
+                          <p className="text-sm text-muted-foreground mt-2">Currently taking courses</p>
+                        </CardContent>
+                      </Card>
+
+                      {/* Completion Rate */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-lg">Completion Rate</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-3xl font-bold text-foreground">
+                            {progress.length > 0 
+                              ? Math.round((progress.filter(p => p.completionStatus === 'completed' || p.completionStatus === 'passed').length / progress.length) * 100)
+                              : 0}%
+                          </p>
+                          <p className="text-sm text-muted-foreground mt-2">Average completion rate</p>
+                        </CardContent>
+                      </Card>
+
+                      {/* Total Time Spent */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-lg">Total Learning Time</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-3xl font-bold text-foreground">
+                            {Math.round(progress.reduce((acc, p) => acc + (p.timeSpent || 0), 0) / 3600)}h
+                          </p>
+                          <p className="text-sm text-muted-foreground mt-2">Hours of learning</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Course Statistics Table */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Course Statistics</CardTitle>
+                        <CardDescription>Overview of enrollment and completion by course</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Course</TableHead>
+                              <TableHead>Enrolled</TableHead>
+                              <TableHead>Completed</TableHead>
+                              <TableHead>In Progress</TableHead>
+                              <TableHead>Completion Rate</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {courses.map((course) => {
+                              const courseProgress = progress.filter(p => p.courseId === course.courseId);
+                              const enrolled = courseProgress.filter(p => p.enrollmentStatus === 'enrolled' || p.enrollmentStatus === 'in_progress').length;
+                              const completed = courseProgress.filter(p => p.completionStatus === 'completed' || p.completionStatus === 'passed').length;
+                              const inProgress = courseProgress.filter(p => p.completionStatus === 'in_progress').length;
+                              const completionRate = enrolled > 0 ? Math.round((completed / enrolled) * 100) : 0;
+                              
+                              return (
+                                <TableRow key={course.courseId}>
+                                  <TableCell className="font-medium">{course.title}</TableCell>
+                                  <TableCell>{enrolled}</TableCell>
+                                  <TableCell>{completed}</TableCell>
+                                  <TableCell>{inProgress}</TableCell>
+                                  <TableCell>
+                                    <span className={completionRate >= 70 ? 'text-green-600 dark:text-green-400' : completionRate >= 40 ? 'text-yellow-600 dark:text-yellow-400' : 'text-muted-foreground'}>
+                                      {completionRate}%
+                                    </span>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                            {courses.length === 0 && (
+                              <TableRow>
+                                <TableCell colSpan={5} className="text-center text-muted-foreground">
+                                  No courses available
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  </>
+                )}
+              </TabsContent>
 
               <TabsContent value="courses" className="space-y-6">
                 <div className="flex items-center justify-between">
@@ -209,28 +418,26 @@ export default function AdminPanel() {
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="activityId">Activity ID (xAPI IRI) *</Label>
+                          <Label htmlFor="blobPath">Course Folder Path *</Label>
                           <Input
-                            id="activityId"
-                            value={courseForm.activityId}
-                            onChange={(e) => setCourseForm({ ...courseForm, activityId: e.target.value })}
-                            placeholder="http://example.com/activity/course-name"
+                            id="blobPath"
+                            value={courseForm.blobPath}
+                            onChange={(e) => setCourseForm({ ...courseForm, blobPath: e.target.value })}
+                            placeholder="sharepoint-navigation-101-custom"
                             required
                           />
                           <p className="text-xs text-muted-foreground">
-                            Unique identifier for this course in xAPI format.
-                            <br />💡 <strong>Tip:</strong> Enter the course folder path below and click "Auto-fill" to extract from tincan.xml automatically.
-                            <br />Examples: <code>urn:articulate:storyline:5Ujw93Dh98n</code> or <code>http://example.com/activity/course-name</code>
+                            Folder name in blob storage (e.g., sharepoint-navigation-101-custom)
                           </p>
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="blobPath">Course Folder Path *</Label>
+                          <Label htmlFor="activityId">Activity ID (xAPI IRI) *</Label>
                           <div className="flex gap-2">
                             <Input
-                              id="blobPath"
-                              value={courseForm.blobPath}
-                              onChange={(e) => setCourseForm({ ...courseForm, blobPath: e.target.value })}
-                              placeholder="sharepoint-navigation-101-custom"
+                              id="activityId"
+                              value={courseForm.activityId}
+                              onChange={(e) => setCourseForm({ ...courseForm, activityId: e.target.value })}
+                              placeholder="http://example.com/activity/course-name"
                               required
                             />
                             <Button
@@ -258,7 +465,9 @@ export default function AdminPanel() {
                             </Button>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            Folder name in blob storage (e.g., sharepoint-navigation-101-custom). Click "Auto-fill" to extract Activity ID from tincan.xml
+                            Unique identifier for this course in xAPI format.
+                            <br />💡 <strong>Tip:</strong> Enter the course folder path above and click "Auto-fill" to extract from tincan.xml automatically.
+                            <br />Examples: <code>urn:articulate:storyline:5Ujw93Dh98n</code> or <code>http://example.com/activity/course-name</code>
                           </p>
                         </div>
                         <div className="space-y-2">
@@ -271,12 +480,45 @@ export default function AdminPanel() {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="thumbnailUrl">Thumbnail URL</Label>
-                          <Input
-                            id="thumbnailUrl"
-                            type="url"
-                            value={courseForm.thumbnailUrl}
-                            onChange={(e) => setCourseForm({ ...courseForm, thumbnailUrl: e.target.value })}
-                          />
+                          <div className="flex gap-2">
+                            <Input
+                              id="thumbnailUrl"
+                              type="text"
+                              value={courseForm.thumbnailUrl}
+                              onChange={(e) => setCourseForm({ ...courseForm, thumbnailUrl: e.target.value })}
+                              placeholder="/course/course-folder/mobile/thumbnail.jpg"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={async () => {
+                                if (!courseForm.blobPath) {
+                                  toast.error('Please enter course folder path first');
+                                  return;
+                                }
+                                try {
+                                  setLoading(true);
+                                  const response = await api.get(`/api/admin/find-thumbnail?coursePath=${encodeURIComponent(courseForm.blobPath)}`);
+                                  if (response.data.found && response.data.thumbnailUrl) {
+                                    setCourseForm({ ...courseForm, thumbnailUrl: response.data.thumbnailUrl });
+                                    toast.success(`Thumbnail found: ${response.data.thumbnailUrl}`);
+                                  } else {
+                                    toast.info(response.data.message || 'No thumbnail image found');
+                                  }
+                                } catch (err: any) {
+                                  toast.error(err.response?.data?.error || 'Failed to find thumbnail');
+                                } finally {
+                                  setLoading(false);
+                                }
+                              }}
+                              disabled={!courseForm.blobPath || loading}
+                            >
+                              Find Thumbnail
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Path to course thumbnail image. Click "Find Thumbnail" to auto-detect from course files, or enter manually (e.g., /course/course-folder/mobile/poster.jpg)
+                          </p>
                         </div>
                         <Button type="submit" className="w-full">Create Course</Button>
                       </form>
@@ -327,11 +569,56 @@ export default function AdminPanel() {
               </TabsContent>
 
               <TabsContent value="progress" className="space-y-6">
-                <h2 className="text-2xl font-bold text-foreground">Learner Progress</h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-bold text-foreground">Learner Progress</h2>
+                  <div className="flex items-center gap-4">
+                    <Select value={selectedCourseId} onValueChange={setSelectedCourseId}>
+                      <SelectTrigger className="w-[250px]">
+                        <SelectValue placeholder="Filter by course" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Courses</SelectItem>
+                        {courses.map((course) => (
+                          <SelectItem key={course.courseId} value={course.courseId}>
+                            {course.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="flex items-center space-x-2">
+                      <Checkbox 
+                        id="completed-only" 
+                        checked={filterCompleted}
+                        onCheckedChange={(checked) => setFilterCompleted(checked === true)}
+                      />
+                      <label
+                        htmlFor="completed-only"
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                      >
+                        Completed only
+                      </label>
+                    </div>
+                    {(selectedCourseId !== 'all' || filterCompleted) && (
+                      <div className="text-sm text-muted-foreground">
+                        {filteredProgress.length} {filteredProgress.length === 1 ? 'learner' : 'learners'} found
+                      </div>
+                    )}
+                  </div>
+                </div>
                 {loading ? (
                   <div className="text-center py-16">
                     <p className="text-muted-foreground">Loading progress...</p>
                   </div>
+                ) : filteredProgress.length === 0 ? (
+                  <Card>
+                    <CardContent className="p-12 text-center">
+                      <p className="text-muted-foreground">
+                        {selectedCourseId === 'all' 
+                          ? 'No learner progress data available.' 
+                          : 'No learners found for this course.'}
+                      </p>
+                    </CardContent>
+                  </Card>
                 ) : (
                   <Card>
                     <CardContent className="p-0">
@@ -350,7 +637,7 @@ export default function AdminPanel() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {progress.map((item, idx) => (
+                          {filteredProgress.map((item, idx) => (
                             <TableRow key={`${item.userId}-${item.courseId}-${idx}`}>
                               <TableCell>
                                 <div>
@@ -410,8 +697,6 @@ export default function AdminPanel() {
             </Tabs>
           </div>
         </main>
-
-        <Footer />
       </div>
     </>
   );

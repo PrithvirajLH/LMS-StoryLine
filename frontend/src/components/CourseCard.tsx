@@ -44,7 +44,7 @@ export default function CourseCard({ course, onEnroll }: CourseCardProps) {
           </div>
         )}
 
-        <div style={styles.actions}>
+        <div style={course.isEnrolled ? styles.actions : styles.actionsNoProgress}>
           {course.isEnrolled ? (
             <Link
               to={`/player/${course.courseId}`}
@@ -127,6 +127,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   actions: {
     marginTop: 'auto',
+  },
+  actionsNoProgress: {
+    marginTop: '0.5rem',
   },
   button: {
     display: 'inline-block',
