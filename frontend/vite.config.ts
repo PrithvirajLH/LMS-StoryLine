@@ -13,21 +13,26 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3001',
         changeOrigin: true,
       },
       '/content': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3001',
         changeOrigin: true,
       },
       '/xapi': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/launch': {
+        target: 'http://localhost:3001',
         changeOrigin: true,
       },
       // Use /course/ (with trailing slash) to avoid matching /courses
-      '/course/': {
-        target: 'http://localhost:3000',
+      '/course': {
+        target: 'http://localhost:3001',
         changeOrigin: true,
+        rewrite: (path) => path, // Don't rewrite the path
       },
     },
     // Ensure SPA routing works - Vite should handle this automatically, but explicitly configure it

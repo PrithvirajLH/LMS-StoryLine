@@ -144,7 +144,7 @@ const CoursePlayer = () => {
   const token = getToken();
   const baseUrl = launchUrl.startsWith('http')
     ? launchUrl
-    : `${import.meta.env.VITE_API_URL || 'http://localhost:3000'}${launchUrl}`;
+    : `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${launchUrl}`;
   const fullLaunchUrl = token ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : baseUrl;
 
   return (

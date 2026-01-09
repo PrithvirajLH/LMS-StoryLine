@@ -30,7 +30,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
 // Middleware
@@ -1651,13 +1651,30 @@ Promise.all([
   });
 
 function startServer(storageInfo) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`\n🚀 Storyline LMS Backend running on http://localhost:${PORT}`);
     console.log(`📚 Course files served from: /course`);
     console.log(`🔐 Auth endpoints: /api/auth/*`);
     console.log(`📊 xAPI LRS endpoint: ${BASE_URL}/xapi`);
     console.log(`🎯 Launch course: ${BASE_URL}/launch?token=YOUR_TOKEN`);
     console.log(`💾 Storage: ${storageInfo}\n`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ Port ${PORT} is already in use!`);
+      console.error(`\n💡 Solutions:`);
+      console.error(`   1. Kill the process using port ${PORT}:`);
+      console.error(`      Windows: netstat -ano | findstr :${PORT} then taskkill /PID <PID> /F`);
+      console.error(`      Linux/Mac: lsof -ti:${PORT} | xargs kill -9`);
+      console.error(`   2. Use a different port by setting PORT environment variable:`);
+      console.error(`      PORT=3001 npm run dev`);
+      console.error(`   3. Check if another instance is running and stop it`);
+      process.exit(1);
+    } else {
+      console.error('Server error:', err);
+      process.exit(1);
+    }
   });
 }
 

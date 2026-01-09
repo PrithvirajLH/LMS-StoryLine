@@ -92,9 +92,9 @@ Create a `.env` file in the `backend` directory:
 
 ```env
 # Server Configuration
-PORT=3000
+PORT=3001
 FRONTEND_URL=http://localhost:5173
-API_BASE_URL=http://localhost:3000
+API_BASE_URL=http://localhost:3001
 
 # Azure Storage Configuration
 AZURE_STORAGE_ACCOUNT_NAME=your-storage-account-name
@@ -126,10 +126,20 @@ npm install
 Create a `.env` file in the `frontend` directory:
 
 ```env
-VITE_API_URL=http://localhost:3000
+VITE_API_URL=http://localhost:3001
 ```
 
 ### 4. Run the Application
+
+**Option A: Using the root package.json (Recommended)**
+```bash
+# From the root directory
+npm install
+npm run install:all  # Install all dependencies
+npm run dev          # Start both frontend and backend
+```
+
+**Option B: Run separately**
 
 **Terminal 1 - Backend:**
 ```bash
@@ -143,9 +153,19 @@ cd frontend
 npm run dev
 ```
 
+**Option C: Linux Quick Setup**
+```bash
+# Run the setup script (Linux/Mac)
+chmod +x setup-linux.sh
+./setup-linux.sh
+
+# Then start the application
+npm run dev
+```
+
 The application will be available at:
 - Frontend: http://localhost:5173
-- Backend API: http://localhost:3000
+- Backend API: http://localhost:3001 (changed from 3000 to avoid conflicts)
 
 ## 📦 Building for Production
 
