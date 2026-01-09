@@ -33,6 +33,25 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
+// Helper function to get base URL from request (for deployment compatibility)
+function getBaseUrl(req) {
+  // If BASE_URL env var is set and not localhost, use it
+  if (process.env.BASE_URL && !process.env.BASE_URL.includes('localhost')) {
+    return process.env.BASE_URL;
+  }
+  // Check for proxy/load balancer headers (X-Forwarded-Proto, X-Forwarded-Host)
+  const protocol = req.get('x-forwarded-proto') || req.protocol || (req.secure ? 'https' : 'http');
+  const host = req.get('x-forwarded-host') || req.get('host') || `localhost:${PORT}`;
+  const baseUrl = `${protocol}://${host}`;
+  
+  // Log for debugging in production
+  if (process.env.NODE_ENV === 'production' || process.env.DEBUG) {
+    console.log(`[Base URL] Generated base URL: ${baseUrl} (from protocol: ${protocol}, host: ${host})`);
+  }
+  
+  return baseUrl;
+}
+
 // Middleware
 app.use(cors({
   origin: true, // Allow all origins for course content
@@ -243,8 +262,11 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
       mbox: `mailto:${user.email}`
     };
 
+    // Get base URL from request (supports network access on deployed servers)
+    const requestBaseUrl = getBaseUrl(req);
+    
     // xAPI endpoint
-    const endpoint = `${BASE_URL}/xapi`;
+    const endpoint = `${requestBaseUrl}/xapi`;
     const authString = Buffer.from(`${user.email}:${token}`).toString('base64');
 
     // Build launch URL with xAPI parameters
@@ -260,7 +282,11 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
     const filePath = course.coursePath && course.coursePath.trim() 
       ? `${course.coursePath}/${course.launchFile}`.replace(/\/+/g, '/') // Normalize slashes
       : course.launchFile;
-    const launchUrl = `${BASE_URL}/course/${filePath}?${params.toString()}`;
+    const launchUrl = `${requestBaseUrl}/course/${filePath}?${params.toString()}`;
+    
+    // Log launch URL for debugging (sanitize token from logs)
+    console.log(`[Course Launch] Course: ${course.title}, Launch URL: ${requestBaseUrl}/course/${filePath}?endpoint=${encodeURIComponent(endpoint)}&...`);
+    console.log(`[Course Launch] xAPI Endpoint: ${endpoint}`);
 
     // Get current progress to include progressPercent
     let progressPercent = 0;
@@ -393,8 +419,11 @@ app.get('/launch', async (req, res) => {
     // Activity ID from tincan.xml
     const activityId = 'urn:articulate:storyline:5Ujw93Dh98n';
 
+    // Get base URL from request (supports network access on deployed servers)
+    const requestBaseUrl = getBaseUrl(req);
+    
     // xAPI endpoint
-    const endpoint = `${BASE_URL}/xapi`;
+    const endpoint = `${requestBaseUrl}/xapi`;
 
     // Create auth string (Basic auth with token)
     const authString = Buffer.from(`${user.email}:${token}`).toString('base64');
@@ -1612,6 +1641,52 @@ app.get('/api/admin/progress', async (req, res) => {
     res.status(status).json({ error: error.message });
   }
 });
+
+// ============================================================================
+// Frontend SPA Fallback Route (for client-side routing)
+// This ensures that refreshing on routes like /player/:courseId works
+// ============================================================================
+
+// Serve frontend static files if dist folder exists (production build)
+const frontendDistPath = path.join(__dirname, '../frontend/dist');
+
+// Check if frontend dist exists synchronously
+fs.access(frontendDistPath)
+  .then(() => {
+    // Serve static assets (JS, CSS, images, etc.)
+    app.use(express.static(frontendDistPath, {
+      maxAge: '1y', // Cache static assets for 1 year
+      etag: true
+    }));
+    
+    // Catch-all route: serve index.html for any non-API routes (SPA fallback)
+    // This must be AFTER all API routes to avoid conflicts
+    app.get('*', (req, res, next) => {
+      // Skip if it's an API route, course route, xAPI route, or launch route
+      if (req.path.startsWith('/api/') || 
+          req.path.startsWith('/course/') || 
+          req.path.startsWith('/xapi/') || 
+          req.path.startsWith('/launch') ||
+          req.path.startsWith('/health')) {
+        return next(); // Let other routes handle it
+      }
+      
+      // For all other routes, serve index.html (SPA fallback)
+      res.sendFile(path.join(frontendDistPath, 'index.html'), (err) => {
+        if (err) {
+          console.error(`[SPA Fallback] Error serving index.html:`, err);
+          res.status(500).json({ error: 'Failed to serve application' });
+        }
+      });
+    });
+    
+    console.log(`✅ Frontend static files served from: ${frontendDistPath}`);
+    console.log(`✅ SPA routing enabled - refresh on any route will work`);
+  })
+  .catch(() => {
+    console.log(`ℹ️  Frontend dist folder not found (${frontendDistPath}). Frontend should be served separately via Vite dev server.`);
+    console.log(`ℹ️  For SPA routing in development, Vite dev server handles this automatically.`);
+  });
 
 // ============================================================================
 // Start Server
