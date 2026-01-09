@@ -3,6 +3,12 @@
  * Serves course files and provides xAPI LRS endpoints
  */
 
+// Ensure crypto is available globally for Azure SDK
+import { webcrypto } from 'crypto';
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto;
+}
+
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
