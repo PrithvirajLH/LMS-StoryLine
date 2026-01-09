@@ -10,6 +10,9 @@ import Courses from "./pages/Courses";
 import CoursePlayer from "./pages/CoursePlayer";
 import ProgressDashboard from "./pages/ProgressDashboard";
 import AdminPanel from "./pages/AdminPanel";
+import AdminDashboard from "./pages/AdminDashboard";
+import CourseManagement from "./pages/CourseManagement";
+import LearnerManagement from "./pages/LearnerManagement";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { MainLayout } from "./components/layout/MainLayout";
 import { isAuthenticated } from "./services/auth";
@@ -67,8 +70,36 @@ const App = () => (
               path="/admin"
               element={
                 <ProtectedRoute requireAdmin>
+                  <Navigate to="/admin/dashboard" replace />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/dashboard"
+              element={
+                <ProtectedRoute requireAdmin>
                   <MainLayout>
-                    <AdminPanel />
+                    <AdminDashboard />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/courses"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <MainLayout>
+                    <CourseManagement />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/learners"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <MainLayout>
+                    <LearnerManagement />
                   </MainLayout>
                 </ProtectedRoute>
               }

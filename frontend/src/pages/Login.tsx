@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { motion } from "framer-motion";
 import { useNavigate, Link } from "react-router-dom";
-import { GraduationCap, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -55,18 +55,11 @@ const Login = () => {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
             >
-              <div className="flex items-center gap-3 mb-8">
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent shadow-glow">
-                  <GraduationCap className="h-8 w-8 text-accent-foreground" />
-                </div>
-                <span className="text-3xl font-bold text-primary-foreground">Creative Learning</span>
-              </div>
-
               <h1 className="text-4xl font-bold text-primary-foreground mb-4">
-                Welcome to Your Learning Journey
+                Welcome to Creative Learning
               </h1>
               <p className="text-lg text-primary-foreground/70 mb-8 max-w-md">
-                Access your courses, track your progress with xAPI, and achieve your learning goals.
+                Empowering learners with innovative educational experiences. Transform your skills and unlock your potential through our comprehensive learning platform.
               </p>
 
               <div className="space-y-4">
@@ -74,19 +67,19 @@ const Login = () => {
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>xAPI-powered progress tracking</span>
+                  <span>Industry-leading xAPI integration</span>
                 </div>
                 <div className="flex items-center gap-3 text-primary-foreground/80">
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Articulate Storyline support</span>
+                  <span>Seamless Articulate Storyline experience</span>
                 </div>
                 <div className="flex items-center gap-3 text-primary-foreground/80">
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Resume where you left off</span>
+                  <span>Real-time progress analytics</span>
                 </div>
               </div>
             </motion.div>
@@ -100,16 +93,17 @@ const Login = () => {
             animate={{ opacity: 1, x: 0 }}
             className="w-full max-w-md"
           >
-            {/* Mobile Logo */}
-            <div className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary shadow-md">
-                <GraduationCap className="h-7 w-7 text-primary-foreground" />
-              </div>
-              <span className="text-2xl font-bold text-foreground">Creative Learning</span>
+            {/* Logo */}
+            <div className="flex items-center justify-center mb-0">
+              <img 
+                src="/assets/images/logo-full.png" 
+                alt="Creative Learning" 
+                className="h-40 w-auto object-contain"
+              />
             </div>
 
-            <div className="text-center mb-8">
-              <h2 className="text-2xl font-bold text-foreground mb-2">Sign in to your account</h2>
+            <div className="text-center mb-4">
+              <h2 className="text-2xl font-bold text-foreground mb-1">Sign in to your account</h2>
               <p className="text-muted-foreground">Enter your credentials to access your courses</p>
             </div>
 

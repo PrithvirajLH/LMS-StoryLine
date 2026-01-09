@@ -9,10 +9,11 @@ export const Footer = () => {
           {/* Brand */}
           <div className="md:col-span-1">
             <Link to="/" className="flex items-center gap-2 mb-4">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent shadow-md">
-                <GraduationCap className="h-6 w-6 text-accent-foreground" />
-              </div>
-              <span className="text-xl font-bold">Creative Learning</span>
+              <img 
+                src="/assets/images/logo-full.png" 
+                alt="Creative Learning" 
+                className="h-10 object-contain"
+              />
             </Link>
             <p className="text-primary-foreground/70 text-sm">
               Empowering learners worldwide with quality education and xAPI-powered progress tracking.

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { Navbar } from "@/components/layout/Navbar";
-import { BookOpen, Users, UserPlus, Trophy } from "lucide-react";
+import { BookOpen, Users, UserPlus, Trophy, Search, Trash2, Edit, Eye, Calendar, Clock, TrendingUp, Filter } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,6 +56,8 @@ export default function AdminPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showCourseForm, setShowCourseForm] = useState(false);
+  const [courseSearchQuery, setCourseSearchQuery] = useState('');
+  const [learnerSearchQuery, setLearnerSearchQuery] = useState('');
   const [courseForm, setCourseForm] = useState({
     title: '',
     description: '',
@@ -384,9 +386,12 @@ export default function AdminPanel() {
               </TabsContent>
 
               <TabsContent value="courses" className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-bold text-foreground">Course Management</h2>
-                  <Button onClick={() => setShowCourseForm(!showCourseForm)}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-2xl font-bold text-foreground">Course Management</h2>
+                    <p className="text-sm text-muted-foreground mt-1">Manage and organize your course catalog</p>
+                  </div>
+                  <Button onClick={() => setShowCourseForm(!showCourseForm)} className="w-full sm:w-auto">
                     {showCourseForm ? 'Cancel' : '+ Create Course'}
                   </Button>
                 </div>
@@ -528,52 +533,113 @@ export default function AdminPanel() {
 
                 {loading ? (
                   <div className="text-center py-16">
-                    <p className="text-muted-foreground">Loading courses...</p>
+                    <div className="inline-flex items-center gap-2 text-muted-foreground">
+                      <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                      <p>Loading courses...</p>
+                    </div>
                   </div>
                 ) : (
-                  <Card>
-                    <CardContent className="p-0">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Title</TableHead>
-                            <TableHead>Activity ID</TableHead>
-                            <TableHead>Enrollments</TableHead>
-                            <TableHead>Attempts</TableHead>
-                            <TableHead>Actions</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {courses.map((course) => (
-                            <TableRow key={course.courseId}>
-                              <TableCell className="font-medium">{course.title}</TableCell>
-                              <TableCell className="text-xs text-muted-foreground">{course.activityId}</TableCell>
-                              <TableCell>{course.enrollmentCount}</TableCell>
-                              <TableCell>{course.attemptCount}</TableCell>
-                              <TableCell>
-                                <Button
-                                  variant="destructive"
-                                  size="sm"
-                                  onClick={() => handleDeleteCourse(course.courseId)}
-                                >
-                                  Delete
-                                </Button>
-                              </TableCell>
-                            </TableRow>
+                  <>
+                    {/* Search Bar */}
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Search courses by title or activity ID..."
+                        value={courseSearchQuery}
+                        onChange={(e) => setCourseSearchQuery(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+
+                    {/* Courses Grid */}
+                    {courses.filter(course => 
+                      courseSearchQuery === '' || 
+                      course.title.toLowerCase().includes(courseSearchQuery.toLowerCase()) ||
+                      course.activityId.toLowerCase().includes(courseSearchQuery.toLowerCase())
+                    ).length === 0 ? (
+                      <Card>
+                        <CardContent className="p-12 text-center">
+                          <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4 opacity-50" />
+                          <p className="text-muted-foreground">
+                            {courseSearchQuery ? 'No courses found matching your search.' : 'No courses available. Create your first course to get started.'}
+                          </p>
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {courses
+                          .filter(course => 
+                            courseSearchQuery === '' || 
+                            course.title.toLowerCase().includes(courseSearchQuery.toLowerCase()) ||
+                            course.activityId.toLowerCase().includes(courseSearchQuery.toLowerCase())
+                          )
+                          .map((course) => (
+                            <Card key={course.courseId} className="hover:shadow-lg transition-shadow">
+                              <CardHeader className="pb-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <CardTitle className="text-lg line-clamp-2">{course.title}</CardTitle>
+                                    <CardDescription className="text-xs mt-1 line-clamp-1">
+                                      {course.activityId}
+                                    </CardDescription>
+                                  </div>
+                                  <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                    <BookOpen className="h-5 w-5 text-primary" />
+                                  </div>
+                                </div>
+                              </CardHeader>
+                              <CardContent className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-1">
+                                    <p className="text-xs text-muted-foreground">Enrollments</p>
+                                    <p className="text-lg font-semibold text-foreground">{course.enrollmentCount}</p>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-xs text-muted-foreground">Attempts</p>
+                                    <p className="text-lg font-semibold text-foreground">{course.attemptCount}</p>
+                                  </div>
+                                </div>
+                                <div className="flex gap-2 pt-2 border-t">
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    onClick={() => handleDeleteCourse(course.courseId)}
+                                    className="flex-1"
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete
+                                  </Button>
+                                </div>
+                              </CardContent>
+                            </Card>
                           ))}
-                        </TableBody>
-                      </Table>
-                    </CardContent>
-                  </Card>
+                      </div>
+                    )}
+                  </>
                 )}
               </TabsContent>
 
               <TabsContent value="progress" className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-bold text-foreground">Learner Progress</h2>
-                  <div className="flex items-center gap-4">
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <h2 className="text-2xl font-bold text-foreground">Learner Management</h2>
+                    <p className="text-sm text-muted-foreground mt-1">Track and monitor learner progress across all courses</p>
+                  </div>
+                  
+                  {/* Filters and Search */}
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Search by learner name or email..."
+                        value={learnerSearchQuery}
+                        onChange={(e) => setLearnerSearchQuery(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
                     <Select value={selectedCourseId} onValueChange={setSelectedCourseId}>
-                      <SelectTrigger className="w-[250px]">
+                      <SelectTrigger className="w-full sm:w-[250px]">
+                        <Filter className="h-4 w-4 mr-2" />
                         <SelectValue placeholder="Filter by course" />
                       </SelectTrigger>
                       <SelectContent>
@@ -585,7 +651,7 @@ export default function AdminPanel() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex items-center space-x-2 px-3 py-2 border rounded-md">
                       <Checkbox 
                         id="completed-only" 
                         checked={filterCompleted}
@@ -593,87 +659,176 @@ export default function AdminPanel() {
                       />
                       <label
                         htmlFor="completed-only"
-                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                        className="text-sm font-medium leading-none cursor-pointer"
                       >
                         Completed only
                       </label>
                     </div>
-                    {(selectedCourseId !== 'all' || filterCompleted) && (
-                      <div className="text-sm text-muted-foreground">
-                        {filteredProgress.length} {filteredProgress.length === 1 ? 'learner' : 'learners'} found
-                      </div>
-                    )}
                   </div>
+                  
+                  {(selectedCourseId !== 'all' || filterCompleted || learnerSearchQuery) && (
+                    <div className="text-sm text-muted-foreground flex items-center gap-2">
+                      <Users className="h-4 w-4" />
+                      <span>
+                        {filteredProgress.filter(p => 
+                          learnerSearchQuery === '' ||
+                          (p.firstName || '').toLowerCase().includes(learnerSearchQuery.toLowerCase()) ||
+                          (p.lastName || '').toLowerCase().includes(learnerSearchQuery.toLowerCase()) ||
+                          (p.email || '').toLowerCase().includes(learnerSearchQuery.toLowerCase())
+                        ).length} {filteredProgress.length === 1 ? 'learner' : 'learners'} found
+                      </span>
+                    </div>
+                  )}
                 </div>
                 {loading ? (
                   <div className="text-center py-16">
-                    <p className="text-muted-foreground">Loading progress...</p>
+                    <div className="inline-flex items-center gap-2 text-muted-foreground">
+                      <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                      <p>Loading progress...</p>
+                    </div>
                   </div>
-                ) : filteredProgress.length === 0 ? (
-                  <Card>
-                    <CardContent className="p-12 text-center">
-                      <p className="text-muted-foreground">
-                        {selectedCourseId === 'all' 
-                          ? 'No learner progress data available.' 
-                          : 'No learners found for this course.'}
-                      </p>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  <Card>
-                    <CardContent className="p-0">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Learner</TableHead>
-                            <TableHead>Course</TableHead>
-                            <TableHead>Enrolled</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Progress</TableHead>
-                            <TableHead>Time Spent</TableHead>
-                            <TableHead>Attempts</TableHead>
-                            <TableHead>Started</TableHead>
-                            <TableHead>Completed</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {filteredProgress.map((item, idx) => (
-                            <TableRow key={`${item.userId}-${item.courseId}-${idx}`}>
-                              <TableCell>
-                                <div>
-                                  <div className="font-medium">
-                                    {item.firstName || item.lastName 
-                                      ? `${item.firstName || ''} ${item.lastName || ''}`.trim()
-                                      : item.email?.split('@')[0] || item.userId || 'Unknown User'}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">{item.email || item.userId}</div>
-                                </div>
-                              </TableCell>
-                              <TableCell>{item.courseTitle}</TableCell>
-                              <TableCell>{new Date(item.enrolledAt).toLocaleDateString()}</TableCell>
-                              <TableCell>{item.enrollmentStatus}</TableCell>
-                              <TableCell>
-                                {item.completedAt || item.completionStatus === 'completed' || item.completionStatus === 'passed' ? '100%' :
-                                 item.progressPercent !== undefined && item.progressPercent !== null ? `${item.progressPercent}%` :
-                                 item.score !== undefined && item.score !== null ? `${item.score}%` : '0%'}
-                              </TableCell>
-                              <TableCell>
-                                {item.timeSpent ? `${Math.floor(item.timeSpent / 60)}m ${item.timeSpent % 60}s` : '0s'}
-                              </TableCell>
-                              <TableCell>{item.attempts || 0}</TableCell>
-                              <TableCell>
-                                {item.startedAt ? new Date(item.startedAt).toLocaleDateString() : '-'}
-                              </TableCell>
-                              <TableCell>
-                                {item.completedAt ? new Date(item.completedAt).toLocaleDateString() : '-'}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </CardContent>
-                  </Card>
-                )}
+                ) : (() => {
+                  const displayProgress = filteredProgress.filter(p => 
+                    learnerSearchQuery === '' ||
+                    (p.firstName || '').toLowerCase().includes(learnerSearchQuery.toLowerCase()) ||
+                    (p.lastName || '').toLowerCase().includes(learnerSearchQuery.toLowerCase()) ||
+                    (p.email || '').toLowerCase().includes(learnerSearchQuery.toLowerCase())
+                  );
+                  
+                  return displayProgress.length === 0 ? (
+                    <Card>
+                      <CardContent className="p-12 text-center">
+                        <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4 opacity-50" />
+                        <p className="text-muted-foreground">
+                          {selectedCourseId !== 'all' || filterCompleted || learnerSearchQuery
+                            ? 'No learners found matching your filters.' 
+                            : 'No learner progress data available.'}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  ) : (
+                    <Card className="border-2 border-black shadow-lg">
+                      <CardContent className="p-0">
+                        <div className="overflow-x-auto">
+                          <div className="relative w-full overflow-auto">
+                            <table className="w-full border-collapse">
+                              <thead className="bg-black border-b-2 border-black">
+                                <tr className="border-b-2 border-black">
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Learner</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Course</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Status</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Progress</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Time Spent</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Attempts</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white border-r-2 border-black py-4">Enrolled</th>
+                                  <th className="h-12 px-4 text-left align-middle font-bold text-white py-4">Completed</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                              {displayProgress.map((item, idx) => {
+                                const progressPercent = item.completedAt || item.completionStatus === 'completed' || item.completionStatus === 'passed' 
+                                  ? 100 
+                                  : item.progressPercent !== undefined && item.progressPercent !== null 
+                                    ? item.progressPercent 
+                                    : item.score !== undefined && item.score !== null 
+                                      ? item.score 
+                                      : 0;
+                                const isCompleted = progressPercent === 100;
+                                
+                                return (
+                                  <tr 
+                                    key={`${item.userId}-${item.courseId}-${idx}`} 
+                                    className="border-b-2 border-black hover:bg-muted/30 transition-colors"
+                                  >
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <div className="flex items-center gap-3">
+                                        <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 ring-2 ring-primary/20">
+                                          <Users className="h-5 w-5 text-primary" />
+                                        </div>
+                                        <div>
+                                          <div className="font-semibold text-foreground">
+                                            {item.firstName || item.lastName 
+                                              ? `${item.firstName || ''} ${item.lastName || ''}`.trim()
+                                              : item.email?.split('@')[0] || item.userId || 'Unknown User'}
+                                          </div>
+                                          <div className="text-xs text-muted-foreground mt-0.5">{item.email || item.userId}</div>
+                                        </div>
+                                      </div>
+                                    </TableCell>
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <div className="font-medium text-foreground">{item.courseTitle}</div>
+                                    </td>
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <span className={`inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold shadow-sm ${
+                                        isCompleted 
+                                          ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400 border border-green-300'
+                                          : item.enrollmentStatus === 'in_progress'
+                                          ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400 border border-blue-300'
+                                          : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300 border border-gray-300'
+                                      }`}>
+                                        {isCompleted ? 'Completed' : item.enrollmentStatus || 'Enrolled'}
+                                      </span>
+                                    </td>
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <div className="flex items-center gap-3 min-w-[120px]">
+                                        <div className="flex-1 bg-muted rounded-full h-2.5 overflow-hidden border border-black/20">
+                                          <div 
+                                            className={`h-full transition-all duration-300 ${
+                                              isCompleted 
+                                                ? 'bg-green-500' 
+                                                : progressPercent >= 50 
+                                                  ? 'bg-blue-500' 
+                                                  : 'bg-yellow-500'
+                                            }`}
+                                            style={{ width: `${progressPercent}%` }}
+                                          />
+                                        </div>
+                                        <span className="text-sm font-bold w-12 text-right text-foreground">{progressPercent}%</span>
+                                      </div>
+                                    </td>
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <div className="flex items-center gap-2 text-sm font-medium">
+                                        <Clock className="h-4 w-4 text-primary" />
+                                        <span className="text-foreground">
+                                          {item.timeSpent 
+                                            ? `${Math.floor(item.timeSpent / 3600)}h ${Math.floor((item.timeSpent % 3600) / 60)}m`
+                                            : '0m'}
+                                        </span>
+                                      </div>
+                                    </td>
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <div className="flex items-center gap-2 font-medium">
+                                        <TrendingUp className="h-4 w-4 text-primary" />
+                                        <span className="text-foreground">{item.attempts || 0}</span>
+                                      </div>
+                                    </td>
+                                    <td className="p-4 align-middle border-r-2 border-black py-4">
+                                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                                        <Calendar className="h-4 w-4 text-primary" />
+                                        {new Date(item.enrolledAt).toLocaleDateString()}
+                                      </div>
+                                    </td>
+                                    <td className="p-4 align-middle py-4">
+                                      {item.completedAt ? (
+                                        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                                          <Calendar className="h-4 w-4 text-primary" />
+                                          {new Date(item.completedAt).toLocaleDateString()}
+                                        </div>
+                                      ) : (
+                                        <span className="text-muted-foreground font-medium">-</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })()}
               </TabsContent>
 
               <TabsContent value="settings" className="space-y-6">

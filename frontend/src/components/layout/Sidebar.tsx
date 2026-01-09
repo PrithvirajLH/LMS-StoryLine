@@ -1,4 +1,4 @@
-import { useState, createContext, useContext } from "react";
+import { createContext, useContext } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { 
   LayoutDashboard, 
@@ -6,10 +6,12 @@ import {
   Settings, 
   LogOut,
   GraduationCap,
+  Users,
+  BookCheck,
+  BarChart3,
   ChevronLeft,
   ChevronRight
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -39,11 +41,11 @@ export const SidebarContext = createContext<SidebarContextType>({
 export const useSidebar = () => useContext(SidebarContext);
 
 interface SidebarProps {
-  isCollapsed: boolean;
-  toggleSidebar: () => void;
+  isCollapsed?: boolean;
+  toggleSidebar?: () => void;
 }
 
-export const Sidebar = ({ isCollapsed, toggleSidebar }: SidebarProps) => {
+export const Sidebar = ({ isCollapsed = true, toggleSidebar }: SidebarProps) => {
   const location = useLocation();
   const user = getUser();
   const admin = isAdmin();
@@ -67,56 +69,53 @@ export const Sidebar = ({ isCollapsed, toggleSidebar }: SidebarProps) => {
   };
 
   return (
-    <aside className={`fixed left-0 top-0 h-screen bg-card border-r border-border/50 flex flex-col z-50 shadow-sm transition-all duration-300 ${
-      isCollapsed ? 'w-16' : 'w-64'
+    <aside className={`fixed left-0 top-0 h-screen bg-background border-r border-border/30 flex flex-col z-50 transition-all duration-300 ${
+      isCollapsed ? 'w-[100px]' : 'w-64'
     }`}>
-        {/* Brand Logo + Name */}
-        <div className={`border-b border-border/50 transition-all duration-300 ${isCollapsed ? 'p-4' : 'p-6'}`}>
-          {isCollapsed ? (
-            // Collapsed: Center logo, make it clickable to expand
-            <div className="flex items-center justify-center w-full">
-              <button
-                onClick={toggleSidebar}
-                className="h-10 w-10 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center hover:bg-primary/30 hover:border-primary/50 transition-all cursor-pointer shadow-sm"
-                aria-label="Expand sidebar"
-                title="Click to expand sidebar"
-              >
-                <GraduationCap className="h-6 w-6 text-primary" />
-              </button>
+        {/* Brand Logo & Toggle */}
+        <div className={`border-b border-border/30 flex items-center h-[113px] ${isCollapsed ? 'justify-center p-1.5' : 'justify-between p-4'}`}>
+          {!isCollapsed && (
+            <div className="flex items-center flex-1 min-w-0">
+              <img 
+                src="/assets/images/logo-full.png" 
+                alt="Creative Learning" 
+                className="h-25 w-full object-contain"
+              />
             </div>
-          ) : (
-            // Expanded: Show logo, name, and toggle button
-            <div className="flex items-center gap-3 justify-between">
-              <div className="flex items-center gap-3 min-w-0 flex-1">
-                <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                  <GraduationCap className="h-5 w-5 text-primary" />
-                </div>
-                <AnimatePresence mode="wait">
-                  <motion.span
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: "auto" }}
-                    exit={{ opacity: 0, width: 0 }}
-                    className="text-base font-semibold text-foreground whitespace-nowrap"
-                  >
-                    Creative Learning
-                  </motion.span>
-                </AnimatePresence>
-              </div>
+          )}
+          {isCollapsed && (
+            <div className="flex items-center justify-center w-full gap-1.5 ml-[10px] h-[70px]">
+              <img 
+                src="/assets/images/logo-icon.png" 
+                alt="Creative Learning" 
+                className="h-[60px] w-[60px] object-contain flex-shrink-0"
+              />
               <Button
                 variant="ghost"
                 size="icon"
+                className="h-7 w-7 flex-shrink-0 p-0"
                 onClick={toggleSidebar}
-                className="h-8 w-8 flex-shrink-0"
-                aria-label="Collapse sidebar"
+                title="Expand sidebar"
               >
-                <ChevronLeft className="h-4 w-4" />
+                <ChevronRight className="h-5 w-5" />
               </Button>
             </div>
+          )}
+          {!isCollapsed && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 flex-shrink-0"
+              onClick={toggleSidebar}
+              title="Collapse sidebar"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
           )}
         </div>
 
         {/* Navigation */}
-        <nav className={`flex-1 overflow-y-auto transition-all duration-300 ${isCollapsed ? 'p-2' : 'p-3'} space-y-1`}>
+        <nav className="flex-1 overflow-y-auto p-2 space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
@@ -125,91 +124,107 @@ export const Sidebar = ({ isCollapsed, toggleSidebar }: SidebarProps) => {
               <Link
                 key={item.href}
                 to={item.href}
-                className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all ${
-                  isCollapsed ? 'px-2 py-2.5 justify-center' : 'px-3 py-2.5'
+                className={`flex items-center rounded-lg transition-all ${
+                  isCollapsed ? 'justify-center p-3 w-fit mx-auto' : 'px-3 py-2 gap-3'
                 } ${
                   isActive
-                    ? "bg-primary/10 text-primary font-semibold"
-                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                 }`}
                 title={isCollapsed ? item.label : undefined}
               >
-                <Icon className="h-5 w-5 flex-shrink-0" />
-                <AnimatePresence mode="wait">
-                  {!isCollapsed && (
-                    <motion.span
-                      initial={{ opacity: 0, width: 0 }}
-                      animate={{ opacity: 1, width: "auto" }}
-                      exit={{ opacity: 0, width: 0 }}
-                      className="whitespace-nowrap overflow-hidden"
-                    >
-                      {item.label}
-                    </motion.span>
-                  )}
-                </AnimatePresence>
+                <Icon className="h-6 w-6 flex-shrink-0" />
+                {!isCollapsed && (
+                  <span className="text-sm font-medium">{item.label}</span>
+                )}
               </Link>
             );
           })}
           
           {admin && (
-            <Link
-              to="/admin"
-              className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all ${
-                isCollapsed ? 'px-2 py-2.5 justify-center' : 'px-3 py-2.5'
-              } ${
-                location.pathname === "/admin"
-                  ? "bg-primary/10 text-primary font-semibold"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
-              }`}
-              title={isCollapsed ? "Admin" : undefined}
-            >
-              <Settings className="h-5 w-5 flex-shrink-0" />
-              <AnimatePresence mode="wait">
+            <>
+              <div className={`${isCollapsed ? '' : 'px-2 py-1'}`}>
                 {!isCollapsed && (
-                  <motion.span
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: "auto" }}
-                    exit={{ opacity: 0, width: 0 }}
-                    className="whitespace-nowrap overflow-hidden"
-                  >
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-2">
                     Admin
-                  </motion.span>
+                  </p>
                 )}
-              </AnimatePresence>
-            </Link>
+              </div>
+              <Link
+                to="/admin/dashboard"
+                className={`flex items-center rounded-lg transition-all ${
+                  isCollapsed ? 'justify-center p-3 w-fit mx-auto' : 'px-3 py-2 gap-3'
+                } ${
+                  location.pathname.startsWith("/admin/dashboard")
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
+                title={isCollapsed ? "Admin Dashboard" : undefined}
+              >
+                <BarChart3 className="h-6 w-6 flex-shrink-0" />
+                {!isCollapsed && (
+                  <span className="text-sm font-medium">Dashboard</span>
+                )}
+              </Link>
+              <Link
+                to="/admin/courses"
+                className={`flex items-center rounded-lg transition-all ${
+                  isCollapsed ? 'justify-center p-3 w-fit mx-auto' : 'px-3 py-2 gap-3'
+                } ${
+                  location.pathname.startsWith("/admin/courses")
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
+                title={isCollapsed ? "Course Management" : undefined}
+              >
+                <BookCheck className="h-6 w-6 flex-shrink-0" />
+                {!isCollapsed && (
+                  <span className="text-sm font-medium">Courses</span>
+                )}
+              </Link>
+              <Link
+                to="/admin/learners"
+                className={`flex items-center rounded-lg transition-all ${
+                  isCollapsed ? 'justify-center p-3 w-fit mx-auto' : 'px-3 py-2 gap-3'
+                } ${
+                  location.pathname.startsWith("/admin/learners")
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
+                title={isCollapsed ? "Learner Management" : undefined}
+              >
+                <Users className="h-6 w-6 flex-shrink-0" />
+                {!isCollapsed && (
+                  <span className="text-sm font-medium">Learners</span>
+                )}
+              </Link>
+            </>
           )}
         </nav>
 
-        {/* User Section */}
+        {/* User Profile Section */}
         {user && (
-          <div className={`border-t border-border/50 transition-all duration-300 ${isCollapsed ? 'p-2' : 'p-4'}`}>
+          <div className="border-t border-border/30 p-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className={`w-full flex items-center gap-3 rounded-lg hover:bg-secondary/50 transition-colors ${
-                  isCollapsed ? 'justify-center px-2 py-2' : 'px-3 py-2'
+                <button className={`w-full flex items-center rounded-lg hover:bg-muted/50 transition-colors ${
+                  isCollapsed ? 'justify-center p-3' : 'px-3 py-2 gap-3'
                 }`}>
-                  <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className="bg-primary/10 text-primary text-xs font-medium">
+                  <Avatar className="h-12 w-12 flex-shrink-0">
+                    <AvatarFallback className="bg-primary/10 text-primary text-sm font-medium">
                       {getUserInitials()}
                     </AvatarFallback>
                   </Avatar>
-                  <AnimatePresence mode="wait">
-                    {!isCollapsed && (
-                      <motion.div
-                        initial={{ opacity: 0, width: 0 }}
-                        animate={{ opacity: 1, width: "auto" }}
-                        exit={{ opacity: 0, width: 0 }}
-                        className="flex-1 text-left min-w-0 overflow-hidden"
-                      >
-                        <p className="text-sm font-medium text-foreground truncate">
-                          {user.firstName || user.email?.split("@")[0] || "User"}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {user.email}
-                        </p>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                  {!isCollapsed && (
+                    <div className="flex-1 min-w-0 text-left">
+                      <p className="text-sm font-medium text-foreground truncate">
+                        {user.firstName || user.email?.split("@")[0] || "User"}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {user.email}
+                      </p>
+                    </div>
+                  )}
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">

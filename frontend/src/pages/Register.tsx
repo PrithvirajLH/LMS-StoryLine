@@ -58,10 +58,11 @@ const Register = () => {
               transition={{ delay: 0.2 }}
             >
               <div className="flex items-center gap-3 mb-8">
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent shadow-glow">
-                  <GraduationCap className="h-8 w-8 text-accent-foreground" />
-                </div>
-                <span className="text-3xl font-bold text-primary-foreground">Creative Learning</span>
+                <img 
+                  src="/assets/images/logo-full.png" 
+                  alt="Creative Learning" 
+                  className="h-12 object-contain"
+                />
               </div>
 
               <h1 className="text-4xl font-bold text-primary-foreground mb-4">
