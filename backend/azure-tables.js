@@ -3,6 +3,9 @@
  * Production-grade table setup for xAPI LRS
  */
 
+// Import crypto polyfill before Azure SDK
+import './crypto-polyfill.js';
+
 import { TableClient, AzureNamedKeyCredential } from '@azure/data-tables';
 import dotenv from 'dotenv';
 

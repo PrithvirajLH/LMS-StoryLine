@@ -3,6 +3,9 @@
  * Production-grade file serving from Azure Blob Storage
  */
 
+// Import crypto polyfill before Azure SDK
+import './crypto-polyfill.js';
+
 import { BlobServiceClient, StorageSharedKeyCredential } from '@azure/storage-blob';
 import dotenv from 'dotenv';
 

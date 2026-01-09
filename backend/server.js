@@ -3,11 +3,8 @@
  * Serves course files and provides xAPI LRS endpoints
  */
 
-// Ensure crypto is available globally for Azure SDK
-import { webcrypto } from 'crypto';
-if (!globalThis.crypto) {
-  globalThis.crypto = webcrypto;
-}
+// Import crypto polyfill before any Azure SDK imports
+import './crypto-polyfill.js';
 
 import express from 'express';
 import cors from 'cors';
