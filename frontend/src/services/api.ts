@@ -1,9 +1,11 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Use relative URL in development (goes through Vite proxy) or absolute URL from env
+// When accessing from network, relative URLs work because Vite proxy handles it
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: API_BASE_URL, // Empty string = relative URLs, uses Vite proxy
   headers: {
     'Content-Type': 'application/json',
   },

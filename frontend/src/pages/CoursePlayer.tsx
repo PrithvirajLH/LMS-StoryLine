@@ -142,9 +142,11 @@ const CoursePlayer = () => {
 
   // Add token as query parameter for iframe
   const token = getToken();
+  // Use window.location.origin for network access, fallback to env or localhost
+  const apiBase = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
   const baseUrl = launchUrl.startsWith('http')
     ? launchUrl
-    : `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${launchUrl}`;
+    : `${apiBase}${launchUrl}`;
   const fullLaunchUrl = token ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : baseUrl;
 
   return (
