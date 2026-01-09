@@ -56,10 +56,10 @@ const Login = () => {
               transition={{ delay: 0.2 }}
             >
               <h1 className="text-4xl font-bold text-primary-foreground mb-4">
-                Welcome to Creative Learning
+                Welcome Back!
               </h1>
               <p className="text-lg text-primary-foreground/70 mb-8 max-w-md">
-                Empowering learners with innovative educational experiences. Transform your skills and unlock your potential through our comprehensive learning platform.
+                Continue your learning journey where you left off. Access your courses, track your progress, and achieve your learning goals.
               </p>
 
               <div className="space-y-4">
@@ -67,19 +67,19 @@ const Login = () => {
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Industry-leading xAPI integration</span>
+                  <span>Resume where you left off</span>
                 </div>
                 <div className="flex items-center gap-3 text-primary-foreground/80">
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Seamless Articulate Storyline experience</span>
+                  <span>Track your learning progress</span>
                 </div>
                 <div className="flex items-center gap-3 text-primary-foreground/80">
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Real-time progress analytics</span>
+                  <span>Access your enrolled courses</span>
                 </div>
               </div>
             </motion.div>

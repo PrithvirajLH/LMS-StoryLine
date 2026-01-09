@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { motion } from "framer-motion";
 import { useNavigate, Link } from "react-router-dom";
-import { GraduationCap, Mail, Lock, User, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, User, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -57,19 +57,11 @@ const Register = () => {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
             >
-              <div className="flex items-center gap-3 mb-8">
-                <img 
-                  src="/assets/images/logo-full.png" 
-                  alt="Creative Learning" 
-                  className="h-12 object-contain"
-                />
-              </div>
-
               <h1 className="text-4xl font-bold text-primary-foreground mb-4">
                 Start Your Learning Journey
               </h1>
               <p className="text-lg text-primary-foreground/70 mb-8 max-w-md">
-                Join thousands of learners and access courses powered by xAPI tracking.
+                Join thousands of learners and unlock your potential. Create your account today and gain access to our comprehensive learning platform.
               </p>
 
               <div className="space-y-4">
@@ -77,19 +69,19 @@ const Register = () => {
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Track your progress with xAPI</span>
+                  <span>Industry-leading xAPI integration</span>
                 </div>
                 <div className="flex items-center gap-3 text-primary-foreground/80">
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Access Articulate Storyline courses</span>
+                  <span>Seamless Articulate Storyline experience</span>
                 </div>
                 <div className="flex items-center gap-3 text-primary-foreground/80">
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
                     <span className="text-accent font-semibold">✓</span>
                   </div>
-                  <span>Resume learning anytime</span>
+                  <span>Real-time progress analytics</span>
                 </div>
               </div>
             </motion.div>
@@ -103,16 +95,17 @@ const Register = () => {
             animate={{ opacity: 1, x: 0 }}
             className="w-full max-w-md"
           >
-            {/* Mobile Logo */}
-            <div className="lg:hidden flex items-center gap-2 mb-8 justify-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary shadow-md">
-                <GraduationCap className="h-7 w-7 text-primary-foreground" />
-              </div>
-              <span className="text-2xl font-bold text-foreground">Creative Learning</span>
+            {/* Logo */}
+            <div className="flex items-center justify-center mb-0">
+              <img 
+                src="/assets/images/logo-full.png" 
+                alt="Creative Learning" 
+                className="h-40 w-auto object-contain"
+              />
             </div>
 
-            <div className="text-center mb-8">
-              <h2 className="text-2xl font-bold text-foreground mb-2">Create your account</h2>
+            <div className="text-center mb-4">
+              <h2 className="text-2xl font-bold text-foreground mb-1">Create your account</h2>
               <p className="text-muted-foreground">Enter your information to get started</p>
             </div>
 
