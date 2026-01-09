@@ -1651,8 +1651,11 @@ Promise.all([
   });
 
 function startServer(storageInfo) {
-  const server = app.listen(PORT, () => {
-    console.log(`\n🚀 Storyline LMS Backend running on http://localhost:${PORT}`);
+  const HOST = process.env.HOST || '0.0.0.0'; // Bind to all interfaces for network access
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`\n🚀 Storyline LMS Backend running on http://${HOST}:${PORT}`);
+    console.log(`   Local:   http://localhost:${PORT}`);
+    console.log(`   Network: http://<your-ip>:${PORT}`);
     console.log(`📚 Course files served from: /course`);
     console.log(`🔐 Auth endpoints: /api/auth/*`);
     console.log(`📊 xAPI LRS endpoint: ${BASE_URL}/xapi`);

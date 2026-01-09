@@ -167,6 +167,30 @@ The application will be available at:
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:3001 (changed from 3000 to avoid conflicts)
 
+**For Network Access (access from other devices on the same network):**
+
+1. **Find your Linux box IP address:**
+   ```bash
+   ip addr show | grep "inet " | grep -v 127.0.0.1
+   # Or
+   hostname -I
+   ```
+
+2. **Start with network access:**
+   ```bash
+   npm run dev:host
+   ```
+
+3. **Access from Windows machine:**
+   - Frontend: `http://<linux-ip>:5173`
+   - Backend API: `http://<linux-ip>:3001`
+
+4. **Firewall Configuration (if needed):**
+   ```bash
+   sudo ufw allow 5173
+   sudo ufw allow 3001
+   ```
+
 ## 📦 Building for Production
 
 ### Backend
