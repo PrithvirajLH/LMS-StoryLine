@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { motion } from "framer-motion";
 import { useNavigate, Link } from "react-router-dom";
-import { Mail, Lock, User, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, User, Eye, EyeOff, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,43 +46,54 @@ const Register = () => {
       </Helmet>
 
       <div className="min-h-screen bg-background flex">
-        {/* Left Panel - Branding */}
-        <div className="hidden lg:flex lg:w-1/2 bg-primary relative overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_hsl(38_92%_50%/0.15),_transparent_50%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_left,_hsl(38_92%_50%/0.1),_transparent_50%)]" />
+        {/* Left Panel - Minimal Branding */}
+        <div className="hidden lg:flex lg:w-1/2 bg-foreground relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-foreground/95 to-foreground" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_hsl(0_0%_100%/0.05),_transparent_50%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_left,_hsl(0_0%_100%/0.03),_transparent_50%)]" />
           
           <div className="relative z-10 flex flex-col justify-center px-16">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
+              transition={{ delay: 0.2, duration: 0.5 }}
             >
-              <h1 className="text-4xl font-bold text-primary-foreground mb-4">
-                Start Your Learning Journey
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.4, duration: 0.5 }}
+                className="mb-8"
+              >
+                <img 
+                  src="/assets/images/logo-full.png" 
+                  alt="Creative Learning" 
+                  className="h-12 w-auto object-contain brightness-0 invert"
+                />
+              </motion.div>
+              <h1 className="text-5xl font-bold text-background mb-6 tracking-tight">
+                Start Your Journey
               </h1>
-              <p className="text-lg text-primary-foreground/70 mb-8 max-w-md">
-                Join thousands of learners and unlock your potential. Create your account today and gain access to our comprehensive learning platform.
+              <p className="text-lg text-background/80 mb-12 max-w-md leading-relaxed">
+                Join thousands of learners and unlock your potential with our comprehensive learning platform.
               </p>
 
               <div className="space-y-4">
-                <div className="flex items-center gap-3 text-primary-foreground/80">
-                  <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
-                    <span className="text-accent font-semibold">✓</span>
-                  </div>
-                  <span>Industry-leading xAPI integration</span>
-                </div>
-                <div className="flex items-center gap-3 text-primary-foreground/80">
-                  <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
-                    <span className="text-accent font-semibold">✓</span>
-                  </div>
-                  <span>Seamless Articulate Storyline experience</span>
-                </div>
-                <div className="flex items-center gap-3 text-primary-foreground/80">
-                  <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
-                    <span className="text-accent font-semibold">✓</span>
-                  </div>
-                  <span>Real-time progress analytics</span>
-                </div>
+                {[
+                  "Industry-leading xAPI integration",
+                  "Seamless Articulate Storyline experience",
+                  "Real-time progress analytics"
+                ].map((feature, index) => (
+                  <motion.div
+                    key={feature}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.6 + index * 0.1, duration: 0.4 }}
+                    className="flex items-center gap-4 text-background/90"
+                  >
+                    <div className="w-1 h-1 rounded-full bg-background/60" />
+                    <span className="text-base">{feature}</span>
+                  </motion.div>
+                ))}
               </div>
             </motion.div>
           </div>
@@ -91,30 +102,31 @@ const Register = () => {
         {/* Right Panel - Form */}
         <div className="flex-1 flex items-center justify-center p-8">
           <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
             className="w-full max-w-md"
           >
-            {/* Logo */}
-            <div className="flex items-center justify-center mb-0">
+            {/* Logo - Mobile */}
+            <div className="flex items-center justify-center mb-12 lg:hidden">
               <img 
                 src="/assets/images/logo-full.png" 
                 alt="Creative Learning" 
-                className="h-40 w-auto object-contain"
+                className="h-12 w-auto object-contain"
               />
             </div>
 
-            <div className="text-center mb-4">
-              <h2 className="text-2xl font-bold text-foreground mb-1">Create your account</h2>
+            <div className="mb-8">
+              <h2 className="text-3xl font-bold text-foreground mb-2 tracking-tight">Create account</h2>
               <p className="text-muted-foreground">Enter your information to get started</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="firstName">First Name</Label>
+                  <Label htmlFor="firstName" className="text-sm font-medium">First Name</Label>
                   <div className="relative">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="firstName"
                       name="firstName"
@@ -122,14 +134,14 @@ const Register = () => {
                       placeholder="John"
                       value={formData.firstName}
                       onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                      className="pl-10 h-12"
+                      className="pl-10 h-12 border-border bg-background focus:border-foreground transition-colors"
                     />
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="lastName">Last Name</Label>
+                  <Label htmlFor="lastName" className="text-sm font-medium">Last Name</Label>
                   <div className="relative">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="lastName"
                       name="lastName"
@@ -137,16 +149,16 @@ const Register = () => {
                       placeholder="Doe"
                       value={formData.lastName}
                       onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                      className="pl-10 h-12"
+                      className="pl-10 h-12 border-border bg-background focus:border-foreground transition-colors"
                     />
                   </div>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="email">Email *</Label>
+                <Label htmlFor="email" className="text-sm font-medium">Email *</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     id="email"
                     name="email"
@@ -154,16 +166,16 @@ const Register = () => {
                     placeholder="you@example.com"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="pl-10 h-12"
+                    className="pl-10 h-12 border-border bg-background focus:border-foreground transition-colors"
                     required
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="password">Password *</Label>
+                <Label htmlFor="password" className="text-sm font-medium">Password *</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     id="password"
                     name="password"
@@ -171,33 +183,39 @@ const Register = () => {
                     placeholder="••••••••"
                     value={formData.password}
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="pl-10 pr-10 h-12"
+                    className="pl-10 pr-10 h-12 border-border bg-background focus:border-foreground transition-colors"
                     required
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                   >
-                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
               </div>
 
               <Button 
                 type="submit" 
-                variant="hero" 
                 size="lg" 
-                className="w-full"
+                className="w-full h-12 bg-foreground text-background hover:bg-foreground/90 font-medium transition-all duration-200 shadow-sm hover:shadow-md"
                 disabled={isLoading}
               >
-                {isLoading ? "Creating account..." : "Create Account"}
+                {isLoading ? (
+                  "Creating account..."
+                ) : (
+                  <>
+                    Create Account
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </>
+                )}
               </Button>
             </form>
 
             <p className="text-center text-sm text-muted-foreground mt-8">
               Already have an account?{" "}
-              <Link to="/login" className="text-primary font-medium hover:underline">
+              <Link to="/login" className="text-foreground font-medium hover:underline transition-all">
                 Sign in here
               </Link>
             </p>

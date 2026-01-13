@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Helmet } from "react-helmet-async";
-import { Search, User } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, Filter } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import api from "../services/api";
 import { getUser } from "@/services/auth";
+import CourseGallery from "@/components/CourseGallery";
 
 interface Course {
   courseId: string;
@@ -102,7 +104,6 @@ const Courses = () => {
     return matchesSearch;
   });
 
-
   return (
     <>
       <Helmet>
@@ -114,92 +115,98 @@ const Courses = () => {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        {/* Top Header */}
-        <header className="px-8 py-6 border-b border-border/50 bg-card/50 backdrop-blur-sm h-[113px]">
-          <div className="flex items-center justify-between w-full gap-6">
-            {/* Left: Page Title */}
-            <div className="flex flex-col gap-1">
-              <h1 className="text-3xl font-semibold text-foreground tracking-tight">Courses</h1>
-              <p className="text-sm text-muted-foreground">Browse and discover courses to enhance your learning journey</p>
-            </div>
+        {/* Header Section */}
+        <motion.header
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="border-b border-border bg-card/50 backdrop-blur-sm"
+        >
+          <div className="px-8 py-8">
+            <div className="flex items-start justify-between gap-6">
+              <div className="flex flex-col gap-6 flex-1">
+                <div>
+                  <h1 className="text-5xl lg:text-6xl font-serif font-bold text-foreground tracking-tight mb-4">
+                    Courses
+                  </h1>
+                  <p className="text-muted-foreground text-lg font-serif">
+                    Browse and discover courses to enhance your learning journey
+                  </p>
+                </div>
 
-            {/* Right: Search, Notifications, Profile */}
-            <div className="flex items-center gap-4">
-              {/* Search Input */}
-              <div className="relative w-80">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  type="text"
-                  placeholder="Search courses..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 h-10 rounded-full border-border/50 bg-background text-sm font-normal"
-                />
+                {/* Search Bar */}
+                <div className="relative max-w-md">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    type="text"
+                    placeholder="Search courses..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-10 h-11 border-border bg-background focus:border-foreground transition-colors rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* Toggle */}
+              <div className="flex items-center gap-1 rounded-lg border border-border p-1 bg-background">
+                <button
+                  onClick={() => setFilter("all")}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+                    filter === "all"
+                      ? "bg-foreground text-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  All Courses
+                </button>
+                <button
+                  onClick={() => setFilter("my")}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+                    filter === "my"
+                      ? "bg-foreground text-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  My Courses
+                </button>
               </div>
             </div>
           </div>
-        </header>
-
-        {/* Filter Bar */}
-        <div className="px-8 py-4 border-b border-border/50 bg-card/30">
-          <div className="flex items-center gap-3">
-            {/* My Courses Toggle */}
-            <div className="flex items-center gap-2 bg-muted/50 rounded-full p-1 border border-border/50 shadow-sm">
-              <button
-                onClick={() => setFilter("all")}
-                className={`px-5 py-2 rounded-full text-sm font-semibold transition-all duration-200 tracking-tight ${
-                  filter === "all"
-                    ? "bg-gradient-navy text-white shadow-md scale-105"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                }`}
-              >
-                All Courses
-              </button>
-              <button
-                onClick={() => setFilter("my")}
-                className={`px-5 py-2 rounded-full text-sm font-semibold transition-all duration-200 tracking-tight ${
-                  filter === "my"
-                    ? "bg-gradient-teal text-white shadow-md scale-105"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                }`}
-              >
-                My Courses
-              </button>
-            </div>
-          </div>
-        </div>
+        </motion.header>
 
         {/* Main Content */}
         <div className="flex-1 overflow-y-auto">
           <div className="p-8">
             {/* Error Message */}
             {error && (
-              <div className="mb-6 p-4 rounded-lg bg-destructive/10 text-destructive border border-destructive/20">
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-6 p-4 rounded-lg bg-destructive/10 text-destructive border border-destructive/20"
+              >
                 {error}
-              </div>
+              </motion.div>
             )}
 
-            {/* Course Grid */}
+            {/* Course Gallery - Horizontal Scroll */}
             {loading ? (
-              <div className="text-center py-16">
-                <div className="inline-flex items-center gap-2 text-muted-foreground">
-                  <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                  <p>Loading courses...</p>
+              <div className="text-center py-20">
+                <div className="inline-flex items-center gap-3 text-muted-foreground">
+                  <div className="w-5 h-5 border-2 border-foreground border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-sm font-medium">Loading courses...</p>
                 </div>
               </div>
             ) : filteredCourses.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {filteredCourses.map((course) => (
-                  <CourseCard
-                    key={course.courseId}
-                    course={course}
-                    onEnroll={handleEnroll}
-                    onClick={handleCourseClick}
-                  />
-                ))}
-              </div>
+              <CourseGallery
+                courses={filteredCourses}
+                onEnroll={(courseId) => handleEnroll(courseId, {} as React.MouseEvent)}
+              />
             ) : (
-              <div className="text-center py-16">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-center py-20"
+              >
                 <p className="text-muted-foreground text-lg mb-4">
                   {filter === "my"
                     ? searchQuery
@@ -210,14 +217,15 @@ const Courses = () => {
                     : "No courses available"}
                 </p>
                 {searchQuery && (
-                  <button
+                  <Button
                     onClick={() => setSearchQuery("")}
-                    className="px-4 py-2 rounded-full text-sm font-medium bg-secondary hover:bg-secondary/80 text-foreground border border-border/50 transition-colors"
+                    variant="outline"
+                    className="mt-4"
                   >
                     Clear Search
-                  </button>
+                  </Button>
                 )}
-              </div>
+              </motion.div>
             )}
           </div>
         </div>
@@ -231,78 +239,70 @@ interface CourseCardProps {
   course: Course & { isEnrolled: boolean; isCompleted: boolean; progress: number };
   onEnroll: (courseId: string, e: React.MouseEvent) => void;
   onClick: (courseId: string) => void;
+  index: number;
 }
 
 const CourseCard = ({
   course,
   onEnroll,
   onClick,
+  index,
 }: CourseCardProps) => {
   return (
-    <div
-      className={`bg-card rounded-xl border shadow-sm hover:shadow-md transition-all overflow-hidden group cursor-pointer flex flex-col ${
-        course.isCompleted
-          ? "border-green-500/30"
-          : course.isEnrolled
-          ? "border-blue-500/30"
-          : "border-border/50"
-      }`}
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.9 }}
+      transition={{ delay: index * 0.05, duration: 0.3 }}
+      whileHover={{ y: -4 }}
+      className="bg-card rounded-xl border border-border shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden group cursor-pointer flex flex-col"
       onClick={() => onClick(course.courseId)}
     >
       {/* Course Image */}
-      <div className="relative aspect-video w-full overflow-hidden bg-gradient-to-br from-secondary to-secondary/80">
+      <div className="relative aspect-video w-full overflow-hidden bg-muted">
         {course.thumbnailUrl ? (
           <img
             src={course.thumbnailUrl}
             alt={course.title}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
         ) : (
-          <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-primary/5">
-            <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">
-              <User className="h-6 w-6 text-primary/30" />
+          <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-muted">
+            <div className="h-16 w-16 rounded-lg bg-foreground/5 flex items-center justify-center">
+              <div className="h-8 w-8 rounded bg-foreground/10" />
             </div>
+          </div>
+        )}
+        {course.isEnrolled && (
+          <div className="absolute top-3 right-3">
+            <Badge
+              variant="secondary"
+              className={`text-xs font-medium ${
+                course.isCompleted
+                  ? "bg-foreground/10 text-foreground border-border"
+                  : "bg-background/80 text-foreground border-border backdrop-blur-sm"
+              }`}
+            >
+              {course.isCompleted ? "Completed" : "Enrolled"}
+            </Badge>
           </div>
         )}
       </div>
 
       {/* Course Info */}
-      <div className="flex-1 flex flex-col p-4">
-        {/* Title and Button Inline */}
-        <div className="flex items-start justify-between gap-3 mb-2">
-          <h3 className="font-semibold text-sm text-foreground group-hover:text-primary transition-colors line-clamp-2 tracking-tight flex-1">
+      <div className="flex-1 flex flex-col p-5">
+        {/* Title and Button */}
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <h3 className="font-semibold text-base text-foreground group-hover:text-foreground/80 transition-colors line-clamp-2 tracking-tight flex-1 leading-snug">
             {course.title}
           </h3>
-          <Button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (course.isEnrolled) {
-                onClick(course.courseId);
-              } else {
-                onEnroll(course.courseId, e);
-              }
-            }}
-            className={`px-4 h-8 text-xs rounded-lg font-medium tracking-tight flex-shrink-0 ${
-              !course.isEnrolled
-                ? "bg-primary hover:bg-primary/90 text-primary-foreground"
-                : course.isCompleted
-                ? "bg-green-500 hover:bg-green-600 text-white"
-                : "bg-blue-500 hover:bg-blue-600 text-white"
-            }`}
-          >
-            {course.isEnrolled
-              ? course.isCompleted
-                ? "Review"
-                : "Continue"
-              : "Enroll"}
-          </Button>
         </div>
 
         {/* Instructor */}
         {course.instructorName && (
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Avatar className="h-4 w-4">
-              <AvatarFallback className="bg-primary/10 text-primary text-[9px]">
+          <div className="flex items-center gap-2 mb-3">
+            <Avatar className="h-5 w-5">
+              <AvatarFallback className="bg-foreground/10 text-foreground text-[10px] font-medium">
                 {course.instructorName
                   .split(" ")
                   .map((n) => n[0])
@@ -310,23 +310,23 @@ const CourseCard = ({
                   .toUpperCase()}
               </AvatarFallback>
             </Avatar>
-            <span className="text-xs text-muted-foreground font-normal">
+            <span className="text-xs text-muted-foreground">
               {course.instructorName}
             </span>
           </div>
         )}
 
         {/* Lessons and Level */}
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-2 mb-4">
           {course.lessonsCount && (
-            <p className="text-xs text-muted-foreground font-normal">
+            <span className="text-xs text-muted-foreground">
               {course.lessonsCount} lessons
-            </p>
+            </span>
           )}
           {course.level && (
             <Badge
               variant="secondary"
-              className="text-[10px] bg-muted text-muted-foreground px-2 py-0.5"
+              className="text-[10px] bg-muted text-muted-foreground px-2 py-0.5 font-normal border-border"
             >
               {course.level}
             </Badge>
@@ -335,15 +335,44 @@ const CourseCard = ({
 
         {/* Progress Bar */}
         {course.isEnrolled && (
-          <div>
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs text-muted-foreground">Progress</span>
+              <span className="text-xs font-medium text-foreground">{Math.round(course.progress)}%</span>
+            </div>
             <Progress
               value={course.progress}
-              className={`h-1 bg-muted ${course.isCompleted ? "bg-green-500/20" : ""}`}
+              className="h-1.5 bg-muted"
             />
           </div>
         )}
+
+        {/* Action Button */}
+        <Button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (course.isEnrolled) {
+              onClick(course.courseId);
+            } else {
+              onEnroll(course.courseId, e);
+            }
+          }}
+          className={`w-full h-10 text-sm font-medium transition-all duration-200 ${
+            !course.isEnrolled
+              ? "bg-foreground text-background hover:bg-foreground/90 shadow-sm hover:shadow-md"
+              : course.isCompleted
+              ? "bg-foreground/10 text-foreground hover:bg-foreground/20 border border-border"
+              : "bg-foreground text-background hover:bg-foreground/90 shadow-sm hover:shadow-md"
+          }`}
+        >
+          {course.isEnrolled
+            ? course.isCompleted
+              ? "Review Course"
+              : "Continue Learning"
+            : "Enroll Now"}
+        </Button>
       </div>
-    </div>
+    </motion.div>
   );
 };
 

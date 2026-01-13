@@ -8,13 +8,13 @@ export default function ProgressIndicator({ status, score }: ProgressIndicatorPr
     switch (status) {
       case 'completed':
       case 'passed':
-        return '#28a745';
+        return 'bg-success text-success-foreground';
       case 'failed':
-        return '#dc3545';
+        return 'bg-destructive text-destructive-foreground';
       case 'in_progress':
-        return '#ffc107';
+        return 'bg-warning text-warning-foreground';
       default:
-        return '#6c757d';
+        return 'bg-muted text-muted-foreground';
     }
   };
 
@@ -34,69 +34,27 @@ export default function ProgressIndicator({ status, score }: ProgressIndicatorPr
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.status}>
+    <div className="w-full">
+      <div className="flex justify-between items-center mb-2">
         <span
-          style={{
-            ...styles.statusBadge,
-            backgroundColor: getStatusColor(),
-          }}
+          className={`px-3.5 py-1.5 rounded-full text-sm font-semibold text-white shadow-md ${getStatusColor()}`}
         >
           {getStatusText()}
         </span>
         {score !== null && score !== undefined && (
-          <span style={styles.score}>Score: {score}%</span>
+          <span className="text-sm text-muted-foreground font-medium">
+            Score: {score}%
+          </span>
         )}
       </div>
       {status === 'in_progress' && (
-        <div style={styles.progressBar}>
+        <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
           <div
-            style={{
-              ...styles.progressFill,
-              backgroundColor: getStatusColor(),
-              width: '60%', // This would come from actual progress data
-            }}
+            className={`h-full transition-all duration-300 ease-out ${getStatusColor().split(' ')[0]}`}
+            style={{ width: '60%' }} // This would come from actual progress data
           />
         </div>
       )}
     </div>
   );
 }
-
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    width: '100%',
-  },
-  status: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '0.5rem',
-  },
-  statusBadge: {
-    padding: '0.375rem 0.875rem',
-    borderRadius: 'var(--radius-lg)',
-    color: 'white',
-    fontSize: '0.875rem',
-    fontWeight: '600',
-    boxShadow: 'var(--shadow-sm)',
-  },
-  score: {
-    fontSize: '0.875rem',
-    color: '#666',
-    fontWeight: '500',
-  },
-  progressBar: {
-    width: '100%',
-    height: '8px',
-    backgroundColor: '#e9ecef',
-    borderRadius: '4px',
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    transition: 'width 0.3s ease',
-  },
-};
-
-

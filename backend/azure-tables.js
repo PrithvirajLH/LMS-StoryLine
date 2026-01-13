@@ -24,7 +24,8 @@ export const TABLES = {
   AGENT_PROFILES: 'xapiAgentProfiles',
   COURSES: 'Courses',
   USER_PROGRESS: 'UserProgress',
-  USERS: 'Users'
+  USERS: 'Users',
+  VERB_STATS: 'VerbStatistics'
 };
 
 let credential = null;
@@ -69,8 +70,9 @@ export async function initializeTables() {
  */
 export function getTableClient(tableKey) {
   if (!tableClients[tableKey]) {
-    // Create client on-demand if not initialized (for Courses, UserProgress, and Users tables)
-    if ((tableKey === 'COURSES' || tableKey === 'USER_PROGRESS' || tableKey === 'USERS') && STORAGE_ACCOUNT_NAME && STORAGE_ACCOUNT_KEY) {
+    // Create client on-demand if not initialized (for xAPI tables and other tables)
+    const allowedOnDemandTables = ['COURSES', 'USER_PROGRESS', 'USERS', 'VERB_STATS', 'STATE', 'STATEMENTS', 'ACTIVITY_PROFILES', 'AGENT_PROFILES'];
+    if (allowedOnDemandTables.includes(tableKey) && STORAGE_ACCOUNT_NAME && STORAGE_ACCOUNT_KEY) {
       if (!credential) {
         credential = new AzureNamedKeyCredential(STORAGE_ACCOUNT_NAME, STORAGE_ACCOUNT_KEY);
       }

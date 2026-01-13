@@ -10,146 +10,58 @@ export default function Header({ title }: HeaderProps) {
   const user = getUser();
 
   return (
-    <header style={styles.header}>
-      <div style={styles.leftSection}>
-        <h1 style={styles.logo} onClick={() => navigate('/courses')}>
-          🎓 Creative Learning
-        </h1>
-        {title && <span style={styles.pageTitle}>{title}</span>}
-      </div>
-      <nav style={styles.nav}>
-        <button
-          onClick={() => navigate('/courses')}
-          style={styles.navButton}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = '#f0f0f0';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'transparent';
-          }}
-        >
-          Courses
-        </button>
-        <button
-          onClick={() => navigate('/dashboard')}
-          style={styles.navButton}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = '#f0f0f0';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'transparent';
-          }}
-        >
-          My Progress
-        </button>
-        {user?.isAdmin && (
-          <button
-            onClick={() => navigate('/admin')}
-            style={styles.navButton}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#f0f0f0';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
+    <header className="sticky top-0 z-50 glass border-b border-border/50 backdrop-blur-xl">
+      <div className="flex items-center justify-between px-8 py-4">
+        <div className="flex items-center gap-6">
+          <h1 
+            onClick={() => navigate('/courses')}
+            className="text-3xl font-bold text-gradient-primary cursor-pointer hover:scale-105 transition-transform duration-200"
           >
-            Admin
-          </button>
-        )}
-        <div style={styles.userSection}>
-          <span style={styles.userName}>
-            {user?.firstName || user?.email?.split('@')[0]}
-          </span>
-          <button
-            onClick={() => {
-              logout();
-              // Use window.location for immediate redirect (full page reload)
-              window.location.href = '/login';
-            }}
-            style={styles.logoutButton}
-          >
-            Logout
-          </button>
+            🎓 Creative Learning
+          </h1>
+          {title && (
+            <span className="text-lg text-muted-foreground font-medium">
+              {title}
+            </span>
+          )}
         </div>
-      </nav>
+        <nav className="flex items-center gap-2">
+          <button
+            onClick={() => navigate('/courses')}
+            className="px-5 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-primary/10 transition-all duration-200 hover:scale-105"
+          >
+            Courses
+          </button>
+          <button
+            onClick={() => navigate('/dashboard')}
+            className="px-5 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-primary/10 transition-all duration-200 hover:scale-105"
+          >
+            My Progress
+          </button>
+          {user?.isAdmin && (
+            <button
+              onClick={() => navigate('/admin')}
+              className="px-5 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-primary/10 transition-all duration-200 hover:scale-105"
+            >
+              Admin
+            </button>
+          )}
+          <div className="flex items-center gap-4 ml-4 pl-4 border-l border-border/50">
+            <span className="text-sm text-muted-foreground font-medium">
+              {user?.firstName || user?.email?.split('@')[0]}
+            </span>
+            <button
+              onClick={() => {
+                logout();
+                window.location.href = '/login';
+              }}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-destructive hover:bg-destructive/90 transition-all duration-200 hover:scale-105 shadow-md hover:shadow-lg"
+            >
+              Logout
+            </button>
+          </div>
+        </nav>
+      </div>
     </header>
   );
 }
-
-const styles: { [key: string]: React.CSSProperties } = {
-  header: {
-    backgroundColor: '#ffffff',
-    padding: '1rem 2rem',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    position: 'sticky',
-    top: 0,
-    zIndex: 100,
-    borderBottom: '1px solid #e9ecef',
-  },
-  leftSection: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '1.5rem',
-  },
-  logo: {
-    fontSize: '1.75rem',
-    fontWeight: '700',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-    margin: 0,
-    cursor: 'pointer',
-    transition: 'transform 0.2s',
-  },
-  pageTitle: {
-    fontSize: '1.1rem',
-    color: '#495057',
-    fontWeight: '500',
-  },
-  nav: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-  },
-  navButton: {
-    padding: '0.625rem 1.25rem',
-    backgroundColor: 'transparent',
-    border: 'none',
-    cursor: 'pointer',
-    color: '#495057',
-    fontSize: '0.95rem',
-    fontWeight: '500',
-    borderRadius: '6px',
-    transition: 'all 0.2s ease',
-  },
-  userSection: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '1rem',
-    marginLeft: '1rem',
-    paddingLeft: '1rem',
-    borderLeft: '1px solid #e9ecef',
-  },
-  userName: {
-    fontSize: '0.9rem',
-    color: '#6c757d',
-    fontWeight: '500',
-  },
-  logoutButton: {
-    padding: '0.5rem 1rem',
-    backgroundColor: '#dc3545',
-    color: 'white',
-    border: 'none',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '0.875rem',
-    fontWeight: '500',
-    transition: 'all 0.2s ease',
-  },
-};
-
-
-

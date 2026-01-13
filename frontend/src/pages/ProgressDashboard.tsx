@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Helmet } from "react-helmet-async";
+import { motion } from "framer-motion";
 import { 
   BookOpen, 
   Clock, 
@@ -15,6 +16,9 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import api from "../services/api";
 import { getUser } from "../services/auth";
+import HeroStatement from "@/components/HeroStatement";
+import ArtifactCollection from "@/components/ArtifactCollection";
+import { getArtifacts } from "@/services/artifacts";
 
 interface CourseProgress {
   courseId: string;
@@ -98,6 +102,7 @@ const ProgressDashboard = () => {
 
   const totalTimeSpent = courses.reduce((acc, c) => acc + (c.timeSpent || 0), 0);
   const hoursLearned = Math.round(totalTimeSpent / 3600 * 10) / 10;
+  const artifacts = getArtifacts();
 
   return (
     <>
@@ -107,30 +112,13 @@ const ProgressDashboard = () => {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        {/* Header */}
-        <div className="px-8 py-6 border-b border-border/50 bg-card/50 backdrop-blur-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-foreground">
-                Welcome back{user?.firstName ? `, ${user.firstName}` : ''}
-              </h1>
-              <p className="text-muted-foreground mt-1">
-                Continue your learning journey
-              </p>
-            </div>
-            <Button variant="outline" asChild>
-              <Link to="/courses">
-                <BookOpen className="h-4 w-4 mr-2" />
-                Browse Courses
-              </Link>
-            </Button>
-          </div>
-        </div>
+        {/* Hero Statement - "Lobby" Experience */}
+        <HeroStatement />
 
         <div className="flex-1 overflow-y-auto">
-          <div className="p-8">
+          <div className="macro-padding pb-24">
             {error && (
-              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20">
+              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20 text-lg font-serif">
                 {error}
               </div>
             )}
@@ -139,64 +127,25 @@ const ProgressDashboard = () => {
               <div className="text-center py-16">
                 <div className="inline-flex items-center gap-2 text-muted-foreground">
                   <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                  <p>Loading your courses...</p>
+                  <p className="text-lg font-serif">Loading your courses...</p>
                 </div>
               </div>
             ) : (
               <>
-                {/* Quick Stats */}
-                {enrolledCourses.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                    <div className="bg-card rounded-xl p-4 border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:border-primary/30">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-1">Active Courses</p>
-                          <p className="text-2xl font-bold text-foreground">{inProgressCourses.length}</p>
-                        </div>
-                        <div className="h-12 w-12 rounded-lg bg-gradient-navy flex items-center justify-center shadow-glow">
-                          <Play className="h-6 w-6 text-white" />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="bg-card rounded-xl p-4 border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:border-accent/30">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-1">Completed</p>
-                          <p className="text-2xl font-bold text-foreground">{completedCourses.length}</p>
-                        </div>
-                        <div className="h-12 w-12 rounded-lg bg-accent/20 flex items-center justify-center">
-                          <CheckCircle2 className="h-6 w-6 text-accent" />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="bg-card rounded-xl p-4 border border-border/50 shadow-sm hover:shadow-md transition-all duration-300 hover:border-primary/30">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-1">Learning Time</p>
-                          <p className="text-2xl font-bold text-foreground">{hoursLearned}h</p>
-                        </div>
-                        <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                          <Clock className="h-6 w-6 text-primary" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Continue Learning Section */}
+                {/* Current Activity - Largest Visual Weight */}
                 {inProgressCourses.length > 0 && (
-                  <div className="mb-16 bg-card rounded-xl border border-border/50 p-6 shadow-md hover:shadow-lg transition-shadow duration-300">
-                    <div className="flex items-center justify-between mb-6">
+                  <div className="mb-24">
+                    <div className="flex items-center justify-between mb-8">
                       <div>
-                        <h2 className="text-xl font-bold text-gradient-navy">Continue Learning</h2>
-                        <p className="text-sm text-muted-foreground mt-1">Pick up where you left off</p>
+                        <h2 className="text-4xl font-serif font-semibold text-foreground mb-2">Continue Learning</h2>
+                        <p className="text-lg text-muted-foreground font-serif">Pick up where you left off</p>
                       </div>
                       <Button variant="ghost" size="sm" asChild>
                         <Link to="/courses">View All <ArrowRight className="h-4 w-4 ml-1" /></Link>
                       </Button>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4 gap-4">
-                      {inProgressCourses.slice(0, 6).map((course) => {
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                      {inProgressCourses.slice(0, 4).map((course) => {
                         if (!course) return null;
                         const progress = course.progressPercent !== undefined && course.progressPercent !== null
                           ? Math.max(0, Math.min(100, Number(course.progressPercent)))
@@ -208,35 +157,68 @@ const ProgressDashboard = () => {
                             to={`/player/${course.courseId}`}
                             className="group"
                           >
-                            <div className="bg-background rounded-xl border border-border/50 overflow-hidden hover:border-primary/50 hover:shadow-md transition-all duration-300 h-full flex flex-col w-full">
-                              {course.thumbnailUrl ? (
-                                <div className="relative w-full h-40 overflow-hidden">
+                            <motion.div
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              whileHover={{ y: -4 }}
+                              className="bg-muted/40 rounded-xl border border-border shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden cursor-pointer flex flex-col h-full"
+                            >
+                              {/* Course Image */}
+                              <div className="relative aspect-video w-full overflow-hidden bg-muted">
+                                {course.thumbnailUrl ? (
                                   <img
                                     src={course.thumbnailUrl}
                                     alt={course.title}
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                                   />
-                                </div>
-                              ) : (
-                                <div className="w-full h-40 bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center">
-                                  <BookOpen className="h-10 w-10 text-primary/30" />
-                                </div>
-                              )}
-                              <div className="p-4 flex-1 flex flex-col">
-                                <h3 className="font-semibold text-sm text-foreground mb-2 line-clamp-2 group-hover:text-primary transition-colors">
-                                  {course.title}
-                                </h3>
-                                <div className="mt-auto space-y-2">
-                                  <div className="flex items-center justify-between text-xs">
-                                    <span className="text-muted-foreground">Progress</span>
-                                    <Badge className="bg-primary/90 text-primary-foreground text-xs">
-                                      {progress}%
-                                    </Badge>
+                                ) : (
+                                  <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-muted">
+                                    <div className="h-16 w-16 rounded-lg bg-foreground/5 flex items-center justify-center">
+                                      <BookOpen className="h-8 w-8 text-foreground/10" />
+                                    </div>
                                   </div>
-                                  <Progress value={progress} className="h-2" />
+                                )}
+                                <div className="absolute top-3 right-3 z-10">
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-xs font-semibold shadow-lg backdrop-blur-md bg-primary/90 text-primary-foreground border-primary/50"
+                                  >
+                                    In Progress
+                                  </Badge>
                                 </div>
                               </div>
-                            </div>
+
+                              {/* Course Info */}
+                              <div className="flex-1 flex flex-col p-5">
+                                <h3 className="font-serif font-semibold text-lg text-foreground group-hover:text-foreground/80 transition-colors line-clamp-2 tracking-wide flex-1 leading-snug mb-3">
+                                  {course.title}
+                                </h3>
+
+                                {/* Progress Bar */}
+                                <div className="mb-4">
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-sm text-muted-foreground">Progress</span>
+                                    <span className="text-sm font-medium text-foreground">{Math.round(progress)}%</span>
+                                  </div>
+                                  <Progress
+                                    value={progress}
+                                    className="h-1.5 bg-muted"
+                                  />
+                                </div>
+
+                                {/* Action Button */}
+                                <Button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    window.location.href = `/player/${course.courseId}`;
+                                  }}
+                                  className="w-full h-11 text-base font-medium transition-all duration-200 bg-foreground text-background hover:bg-foreground/90 shadow-sm hover:shadow-md"
+                                >
+                                  Continue Learning
+                                </Button>
+                              </div>
+                            </motion.div>
                           </Link>
                         );
                       })}
@@ -244,29 +226,101 @@ const ProgressDashboard = () => {
                   </div>
                 )}
 
-                {/* Divider between sections */}
-                {inProgressCourses.length > 0 && enrolledCourses.length > 0 && (
-                  <div className="mb-12 flex items-center gap-4">
-                    <div className="flex-1 h-px bg-border/50"></div>
-                    <div className="h-1 w-1 rounded-full bg-border"></div>
-                    <div className="flex-1 h-px bg-border/50"></div>
+                {/* Motivation/Stats - Subtle, Integrated */}
+                {enrolledCourses.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+                    <motion.div 
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.1 }}
+                      whileHover={{ y: -4, scale: 1.02 }}
+                      className="glass-sm p-6 rounded-2xl border border-border/50 shadow-lg hover:shadow-2xl transition-all duration-300 bg-card/80 backdrop-blur-sm"
+                      style={{
+                        boxShadow: '0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Active</p>
+                          <p className="text-4xl font-serif font-bold text-foreground">{inProgressCourses.length}</p>
+                        </div>
+                        <div 
+                          className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                          style={{
+                            background: 'linear-gradient(135deg, #FF6B9D, #C44569, #8B5FBF)'
+                          }}
+                        >
+                          <Play className="h-6 w-6 text-white" />
+                        </div>
+                      </div>
+                    </motion.div>
+                    <motion.div 
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2 }}
+                      whileHover={{ y: -4, scale: 1.02 }}
+                      className="glass-sm p-6 rounded-2xl border border-border/50 shadow-lg hover:shadow-2xl transition-all duration-300 bg-card/80 backdrop-blur-sm"
+                      style={{
+                        boxShadow: '0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Completed</p>
+                          <p className="text-4xl font-serif font-bold text-foreground">{completedCourses.length}</p>
+                        </div>
+                        <div 
+                          className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                          style={{
+                            background: 'linear-gradient(135deg, #4ECDC4, #44A08D)'
+                          }}
+                        >
+                          <CheckCircle2 className="h-6 w-6 text-white" />
+                        </div>
+                      </div>
+                    </motion.div>
+                    <motion.div 
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.3 }}
+                      whileHover={{ y: -4, scale: 1.02 }}
+                      className="glass-sm p-6 rounded-2xl border border-border/50 shadow-lg hover:shadow-2xl transition-all duration-300 bg-card/80 backdrop-blur-sm"
+                      style={{
+                        boxShadow: '0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Time</p>
+                          <p className="text-4xl font-serif font-bold text-foreground">{hoursLearned}</p>
+                          <p className="text-base text-muted-foreground mt-1 font-serif">hours</p>
+                        </div>
+                        <div 
+                          className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                          style={{
+                            background: 'linear-gradient(135deg, #8B5FBF, #C44569)'
+                          }}
+                        >
+                          <Clock className="h-6 w-6 text-white" />
+                        </div>
+                      </div>
+                    </motion.div>
                   </div>
                 )}
 
-                {/* All Enrolled Courses */}
-                {enrolledCourses.length > 0 && (
-                  <div className="mb-8 bg-card rounded-xl border border-border/50 p-6 shadow-md hover:shadow-lg transition-shadow duration-300">
-                    <div className="flex items-center justify-between mb-6">
-                      <div>
-                        <h2 className="text-xl font-bold text-gradient-teal">My Courses</h2>
-                        <p className="text-sm text-muted-foreground mt-1">All your enrolled courses</p>
+                {/* Library/Archive - Hidden behind clean menu */}
+                {completedCourses.length > 0 && (
+                  <details className="mb-8">
+                    <summary className="cursor-pointer text-4xl font-serif font-semibold text-foreground mb-4 list-none">
+                      <div className="flex items-center justify-between">
+                        <span className="mb-2">Completed</span>
+                        <ArrowRight className="h-5 w-5 text-muted-foreground" />
                       </div>
-                      <Button variant="ghost" size="sm" asChild>
-                        <Link to="/courses">View All <ArrowRight className="h-4 w-4 ml-1" /></Link>
-                      </Button>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4 gap-4">
-                      {enrolledCourses.map((course) => {
+                    </summary>
+
+                    <div className="mt-6">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4 gap-4">
+                        {completedCourses.map((course) => {
                         if (!course) return null;
                         const progress = course.progressPercent !== undefined && course.progressPercent !== null
                           ? Math.max(0, Math.min(100, Number(course.progressPercent)))
@@ -281,81 +335,90 @@ const ProgressDashboard = () => {
                             to={`/player/${course.courseId}`}
                             className="group "
                           >
-                            <div className={`bg-card rounded-xl border overflow-hidden hover:shadow-md transition-all duration-300 h-full flex flex-col w-full ${
-                              isCompleted 
-                                ? 'border-green-500/30' 
-                                : isInProgress 
-                                ? 'border-primary/30' 
-                                : 'border-border/50'
-                            }`}>
-                              {course.thumbnailUrl ? (
-                                <div className="relative w-full h-40 overflow-hidden">
+                            <motion.div
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              whileHover={{ y: -4 }}
+                              className={`bg-muted/40 rounded-xl border border-border shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden cursor-pointer flex flex-col h-full ${
+                                isCompleted 
+                                  ? 'border-green-500/30 bg-green-500/10' 
+                                  : isInProgress 
+                                  ? 'border-primary/30 bg-primary/10' 
+                                  : 'border-border/50'
+                              }`}
+                            >
+                              {/* Course Image */}
+                              <div className="relative aspect-video w-full overflow-hidden bg-muted">
+                                {course.thumbnailUrl ? (
                                   <img
                                     src={course.thumbnailUrl}
                                     alt={course.title}
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                                   />
-                                  {isCompleted && (
-                                    <div className="absolute top-2 right-2">
-                                      <Badge className="bg-green-500 text-white text-xs">
-                                        <CheckCircle2 className="h-3 w-3 mr-1" />
-                                        Done
-                                      </Badge>
+                                ) : (
+                                  <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-muted">
+                                    <div className="h-16 w-16 rounded-lg bg-foreground/5 flex items-center justify-center">
+                                      <BookOpen className="h-8 w-8 text-foreground/10" />
                                     </div>
-                                  )}
-                                </div>
-                              ) : (
-                                <div className="w-full h-40 bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center relative">
-                                  <BookOpen className="h-10 w-10 text-primary/30" />
-                                  {isCompleted && (
-                                    <div className="absolute top-2 right-2">
-                                      <Badge className="bg-green-500 text-white text-xs">
-                                        <Trophy className="h-3 w-3 mr-1" />
-                                        Done
-                                      </Badge>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              <div className="p-4 flex-1 flex flex-col">
-                                <h3 className="font-semibold text-sm text-foreground mb-2 line-clamp-2 group-hover:text-primary transition-colors">
-                                  {course.title}
-                                </h3>
-                                {course.description && (
-                                  <p className="text-xs text-muted-foreground mb-3 line-clamp-2">
-                                    {course.description}
-                                  </p>
+                                  </div>
                                 )}
-                                <div className="mt-auto space-y-2">
-                                  <div className="flex items-center justify-between text-xs">
-                                    <span className="text-muted-foreground">Progress</span>
-                                    {isInProgress && (
-                                      <Badge className="bg-primary/90 text-primary-foreground text-xs">
-                                        {progress}%
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  <Progress 
-                                    value={progress} 
-                                    className={`h-2 ${
-                                      isCompleted ? 'bg-green-500/20' : 
-                                      isInProgress ? 'bg-primary/20' : ''
+                                <div className="absolute top-3 right-3 z-10">
+                                  <Badge
+                                    variant="secondary"
+                                    className={`text-xs font-semibold shadow-lg backdrop-blur-md ${
+                                      isCompleted
+                                        ? "bg-success/90 text-success-foreground border-success/50"
+                                        : isInProgress
+                                        ? "bg-primary/90 text-primary-foreground border-primary/50"
+                                        : "bg-muted/90 text-muted-foreground border-border/80 backdrop-blur-md"
                                     }`}
-                                  />
-                                  <div className="flex items-center justify-between mt-1">
-                                    <span className="text-xs text-muted-foreground">
-                                      {isCompleted ? 'Completed' : isInProgress ? 'In Progress' : 'Not Started'}
-                                    </span>
-                                    <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all" />
-                                  </div>
+                                  >
+                                    {isCompleted ? "Completed" : isInProgress ? "In Progress" : "Enrolled"}
+                                  </Badge>
                                 </div>
                               </div>
-                            </div>
+
+                              {/* Course Info */}
+                              <div className="flex-1 flex flex-col p-5">
+                                <h3 className="font-serif font-semibold text-sm sm:text-base md:text-lg lg:text-xl text-foreground group-hover:text-primary transition-all duration-300 line-clamp-2 flex-1 leading-relaxed mb-4">
+                                  {course.title}
+                                </h3>
+
+                                {/* Progress Bar */}
+                                <div className="mb-4">
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-base text-muted-foreground font-serif">Progress</span>
+                                    <span className="text-base font-medium text-foreground font-serif">{Math.round(progress)}%</span>
+                                  </div>
+                                  <Progress
+                                    value={progress}
+                                    className="h-1.5 bg-muted"
+                                  />
+                                </div>
+
+                                {/* Action Button */}
+                                <Button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    window.location.href = `/player/${course.courseId}`;
+                                  }}
+                                  className={`w-full h-11 text-base font-medium transition-all duration-200 ${
+                                    isCompleted
+                                      ? "bg-foreground/10 text-foreground hover:bg-foreground/20 border border-border"
+                                      : "bg-foreground text-background hover:bg-foreground/90 shadow-sm hover:shadow-md"
+                                  }`}
+                                >
+                                  {isCompleted ? "Review Course" : "Continue Learning"}
+                                </Button>
+                              </div>
+                            </motion.div>
                           </Link>
                         );
-                      })}
+                        })}
+                      </div>
                     </div>
-                  </div>
+                  </details>
                 )}
 
                 {/* Empty State */}
@@ -364,8 +427,8 @@ const ProgressDashboard = () => {
                     <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center">
                       <Sparkles className="h-10 w-10 text-primary/50" />
                     </div>
-                    <h3 className="text-xl font-bold text-foreground mb-2">Start Your Learning Journey</h3>
-                    <p className="text-muted-foreground mb-6 max-w-md mx-auto">
+                    <h3 className="text-3xl font-serif font-semibold text-foreground mb-2">Start Your Learning Journey</h3>
+                    <p className="text-lg text-muted-foreground mb-6 max-w-md mx-auto font-serif">
                       You haven't enrolled in any courses yet. Browse our catalog to find courses that interest you.
                     </p>
                     <Button size="lg" asChild>
@@ -377,18 +440,25 @@ const ProgressDashboard = () => {
                   </div>
                 )}
 
+                {/* Artifact Collection */}
+                {artifacts.length > 0 && (
+                  <div className="mt-16">
+                    <ArtifactCollection artifacts={artifacts} />
+                  </div>
+                )}
+
                 {/* Achievement Section */}
                 {completedCourses.length > 0 && (
-                  <div className="mt-8 bg-gradient-navy rounded-xl p-6 border border-primary/30 shadow-lg">
+                  <div className="mt-8 rounded-xl p-6 border border-primary/30 shadow-lg" style={{ background: 'linear-gradient(135deg, #8B5FBF 0%, #C44569 50%, #FF6B9D 100%)' }}>
                     <div className="flex items-center gap-4">
-                      <div className="h-14 w-14 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center flex-shrink-0 shadow-teal-glow">
+                      <div className="h-14 w-14 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center flex-shrink-0">
                         <Trophy className="h-7 w-7 text-white" />
                       </div>
                       <div className="flex-1">
-                        <h3 className="font-semibold text-white mb-1">
+                        <h3 className="font-serif font-semibold text-white mb-1 text-2xl drop-shadow-sm">
                           {completedCourses.length} {completedCourses.length === 1 ? 'Course' : 'Courses'} Completed!
                         </h3>
-                        <p className="text-sm text-white/90">
+                        <p className="text-base text-white/95 drop-shadow-sm">
                           Great progress! Keep up the excellent work.
                         </p>
                       </div>

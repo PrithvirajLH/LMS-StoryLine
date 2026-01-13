@@ -16,6 +16,13 @@ export default {
     extend: {
       fontFamily: {
         sans: ["Inter", "system-ui", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "sans-serif"],
+        serif: ["Playfair Display", "Georgia", "Times New Roman", "serif"],
+        display: ["Playfair Display", "Georgia", "Times New Roman", "serif"],
+      },
+      spacing: {
+        "30": "7.5rem", /* 120px for macro whitespace */
+        "36": "9rem",   /* 144px */
+        "48": "12rem",  /* 192px */
       },
       colors: {
         border: "hsl(var(--border))",
@@ -78,7 +85,8 @@ export default {
           teal: "#00B7C3",
           navy: "#00467F",
           aqua: "#4FD6E5",
-          gray: "#6CA7C6",
+          cyan: "hsl(191 91% 50%)",
+          blue: "hsl(217 91% 60%)",
         },
       },
       borderRadius: {
@@ -91,7 +99,11 @@ export default {
         "md": "var(--shadow-md)",
         "lg": "var(--shadow-lg)",
         "xl": "var(--shadow-xl)",
+        "2xl": "var(--shadow-2xl)",
         "glow": "var(--shadow-glow)",
+        "cyan-glow": "var(--shadow-cyan-glow)",
+        "teal-glow": "var(--shadow-teal-glow)",
+        "glass": "var(--shadow-glass)",
       },
       keyframes: {
         "accordion-down": {
@@ -110,12 +122,32 @@ export default {
           from: { transform: "translateX(100%)" },
           to: { transform: "translateX(0)" },
         },
+        "slide-up": {
+          from: { opacity: "0", transform: "translateY(20px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+        "shimmer": {
+          "0%": { backgroundPosition: "-1000px 0" },
+          "100%": { backgroundPosition: "1000px 0" },
+        },
+        "float": {
+          "0%, 100%": { transform: "translateY(0px)" },
+          "50%": { transform: "translateY(-20px)" },
+        },
+        "glow": {
+          "0%, 100%": { boxShadow: "0 0 20px hsl(191 91% 50% / 0.3)" },
+          "50%": { boxShadow: "0 0 40px hsl(182 91% 56% / 0.5)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "fade-in": "fade-in 0.5s ease-out forwards",
         "slide-in-right": "slide-in-right 0.3s ease-out",
+        "slide-up": "slide-up 0.3s ease-out forwards",
+        "shimmer": "shimmer 2s linear infinite",
+        "float": "float 6s ease-in-out infinite",
+        "glow": "glow 3s ease-in-out infinite",
       },
     },
   },

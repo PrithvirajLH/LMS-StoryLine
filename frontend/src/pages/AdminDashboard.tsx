@@ -224,7 +224,7 @@ export default function AdminDashboard() {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        <div className="px-8 py-6 border-b border-border/50 bg-card/50 backdrop-blur-sm">
+        <div className="px-8 py-6 border-b border-border/50 glass shadow-glass">
           <h1 className="text-3xl font-bold text-foreground">Admin Dashboard</h1>
           <p className="text-muted-foreground mt-1">Overview of your learning management system</p>
         </div>

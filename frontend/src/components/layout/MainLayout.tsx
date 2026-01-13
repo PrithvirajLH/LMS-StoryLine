@@ -1,38 +1,21 @@
-import { ReactNode, useState } from "react";
-import { Sidebar, useSidebar, SidebarContext } from "./Sidebar";
+import { ReactNode } from "react";
+import { useLocation } from "react-router-dom";
+import { NowBar } from "@/components/NowBar";
 
 interface MainLayoutProps {
   children: ReactNode;
 }
 
-const MainContent = ({ children }: MainLayoutProps) => {
-  const { isCollapsed } = useSidebar();
-  
+export const MainLayout = ({ children }: MainLayoutProps) => {
+  const location = useLocation();
+  const isOnCoursePlayerPage = location.pathname.startsWith("/player/");
+
   return (
-    <div className={`flex-1 transition-all duration-300 flex flex-col ${
-      isCollapsed ? 'ml-20' : 'ml-64'
-    }`}>
-      <main className="flex-1 flex flex-col">
+    <div className="min-h-screen bg-background flex flex-col">
+      <main className="flex-1 flex flex-col bg-background overflow-hidden">
         {children}
       </main>
+      {!isOnCoursePlayerPage && <NowBar />}
     </div>
   );
 };
-
-export const MainLayout = ({ children }: MainLayoutProps) => {
-  const [isCollapsed, setIsCollapsed] = useState(false);
-
-  const toggleSidebar = () => {
-    setIsCollapsed(!isCollapsed);
-  };
-
-  return (
-    <SidebarContext.Provider value={{ isCollapsed, toggleSidebar }}>
-      <div className="min-h-screen bg-background flex">
-        <Sidebar isCollapsed={isCollapsed} toggleSidebar={toggleSidebar} />
-        <MainContent>{children}</MainContent>
-      </div>
-    </SidebarContext.Provider>
-  );
-};
-

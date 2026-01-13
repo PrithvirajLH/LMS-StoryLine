@@ -17,6 +17,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import { MainLayout } from "./components/layout/MainLayout";
 import { isAuthenticated } from "./services/auth";
 import NotFound from "./pages/NotFound";
+import { CurrentCourseProvider } from "./contexts/CurrentCourseContext";
 
 const queryClient = new QueryClient();
 
@@ -24,9 +25,10 @@ const App = () => (
   <HelmetProvider>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
+        <CurrentCourseProvider>
+          <Toaster />
+          <Sonner />
+          <BrowserRouter>
           <Routes>
             <Route
               path="/login"
@@ -104,10 +106,21 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/admin/verbs"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <MainLayout>
+                    <AdminPanel />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
             <Route path="/" element={<Navigate to="/courses" replace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
-        </BrowserRouter>
+          </BrowserRouter>
+        </CurrentCourseProvider>
       </TooltipProvider>
     </QueryClientProvider>
   </HelmetProvider>

@@ -12,6 +12,7 @@ import {
   retryOperation,
   TABLES
 } from './azure-tables.js';
+import * as verbTracker from './xapi-verb-tracker.js';
 
 /**
  * Save xAPI statement(s) to Azure Table Storage
@@ -55,6 +56,33 @@ export async function saveStatement(statement) {
   };
 
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
+
+  // Track verb usage for statistics
+  const actor = statement.actor;
+  const activityId = statement.object?.id || '';
+  const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : 'unknown';
+  const verbId = statement.verb?.id || '';
+  
+  if (verbId) {
+    // Track verb usage (async, persists to Azure - don't await to avoid blocking)
+    verbTracker.trackVerbUsage(verbId, userEmail, activityId).catch(err => {
+      console.error(`[xAPI] Error tracking verb usage:`, err);
+    });
+    
+    // Process custom verb handlers
+    await verbTracker.processCustomVerb(statement, {
+      userEmail,
+      activityId,
+      timestamp: statement.timestamp
+    });
+    
+    // Log custom/unknown verbs for monitoring
+    const verbConfig = verbTracker.getVerbConfig(verbId);
+    if (verbConfig.isCustom || verbConfig.isUnknown) {
+      console.log(`[xAPI Verb Tracker] Custom/Unknown verb: ${verbId}`);
+      console.log(`[xAPI Verb Tracker] Category: ${verbConfig.category}, Action: ${verbConfig.action}`);
+    }
+  }
 
   console.log(`[xAPI Azure] Statement saved: ${statement.id.substring(0, 50)}...`);
   

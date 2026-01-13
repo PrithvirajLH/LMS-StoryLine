@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Search } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import api from '../services/api';
 import { getUser } from '../services/auth';
 import CourseCard from '../components/CourseCard';
-import Header from '../components/Header';
 
 interface Course {
   courseId: string;
@@ -42,9 +43,7 @@ export default function CourseCatalog() {
 
   const handleEnroll = async (courseId: string) => {
     try {
-      // Enroll by launching the course (auto-enrolls)
       await api.post(`/api/courses/${courseId}/launch`);
-      // Reload courses to update enrollment status
       loadCourses();
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to enroll in course');
@@ -57,31 +56,40 @@ export default function CourseCatalog() {
   );
 
   return (
-    <div style={styles.container}>
-      <Header />
-
-      <main style={styles.main}>
-        <div style={styles.searchBar}>
-          <div style={styles.searchWrapper}>
-            <span style={styles.searchIcon}>🔍</span>
-            <input
+    <div className="min-h-screen bg-gradient-hero">
+      <main className="max-w-7xl mx-auto p-8">
+        <div className="mb-8">
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+            <Input
               type="text"
               placeholder="Search courses by title or description..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              style={styles.searchInput}
+              className="pl-12 h-14 text-base glass-sm"
             />
           </div>
         </div>
 
-        {error && <div style={styles.error}>{error}</div>}
+        {error && (
+          <div className="mb-6 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive shadow-md">
+            {error}
+          </div>
+        )}
 
         {loading ? (
-          <div style={styles.loading}>Loading courses...</div>
+          <div className="text-center py-16">
+            <div className="inline-flex items-center gap-3 text-muted-foreground">
+              <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-lg">Loading courses...</p>
+            </div>
+          </div>
         ) : (
-          <div style={styles.grid}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
             {filteredCourses.length === 0 ? (
-              <div style={styles.empty}>No courses found</div>
+              <div className="col-span-full text-center py-16 glass-card p-8">
+                <p className="text-muted-foreground text-lg">No courses found</p>
+              </div>
             ) : (
               filteredCourses.map((course) => (
                 <CourseCard
@@ -97,70 +105,3 @@ export default function CourseCatalog() {
     </div>
   );
 }
-
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    minHeight: '100vh',
-  },
-  main: {
-    maxWidth: '1400px',
-    margin: '0 auto',
-    padding: '2rem',
-  },
-  searchBar: {
-    marginBottom: '2rem',
-  },
-  searchWrapper: {
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  searchIcon: {
-    position: 'absolute',
-    left: '1rem',
-    fontSize: '1.25rem',
-    zIndex: 1,
-  },
-  searchInput: {
-    width: '100%',
-    padding: '1rem 1rem 1rem 3rem',
-    fontSize: '1rem',
-    border: '2px solid var(--gray-200)',
-    borderRadius: 'var(--radius-lg)',
-    backgroundColor: 'white',
-    color: 'var(--gray-800)',
-    boxShadow: 'var(--shadow-sm)',
-    transition: 'all var(--transition-base)',
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-    gap: '1.5rem',
-  },
-  loading: {
-    textAlign: 'center',
-    padding: '3rem',
-    color: 'var(--gray-600)',
-    fontSize: '1.1rem',
-  },
-  error: {
-    backgroundColor: '#fef2f2',
-    color: '#dc2626',
-    padding: '1rem 1.5rem',
-    borderRadius: 'var(--radius-md)',
-    marginBottom: '1rem',
-    border: '1px solid #fecaca',
-    boxShadow: 'var(--shadow-sm)',
-  },
-  empty: {
-    textAlign: 'center',
-    padding: '3rem',
-    color: 'var(--gray-500)',
-    gridColumn: '1 / -1',
-    backgroundColor: 'white',
-    borderRadius: 'var(--radius-lg)',
-    boxShadow: 'var(--shadow-sm)',
-  },
-};
-
-

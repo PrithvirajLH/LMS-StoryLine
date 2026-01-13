@@ -5,6 +5,7 @@
 
 import { getTableClient, retryOperation, TABLES } from './azure-tables.js';
 import * as xapiLRS from './xapi-lrs-azure.js';
+import * as verbTracker from './xapi-verb-tracker.js';
 
 /**
  * Initialize progress table
@@ -316,28 +317,33 @@ export async function calculateProgressFromStatements(userId, courseId, activity
       startedAt = sortedByTime[0]?.timestamp || sortedByTime[0]?.stored || null;
     }
     
-    // Find initial statement (started) - prefer explicit initialized/launched verbs if they exist
-    const initialStatement = statements.find(s => 
-      s.verb?.id === 'http://adlnet.gov/expapi/verbs/initialized' ||
-      s.verb?.id === 'http://adlnet.gov/expapi/verbs/launched'
-    );
+    // Find initial statement (started) - use verb tracker to detect start verbs
+    const initialStatement = statements.find(s => {
+      const verbId = s.verb?.id || '';
+      return verbTracker.isStartVerb(verbId);
+    });
     if (initialStatement) {
       // Use the explicit initialized/launched timestamp if available
       startedAt = initialStatement.timestamp || initialStatement.stored || startedAt;
     }
     
-    // Find completion statement
+    // Find completion statement - use verb tracker to detect completion verbs
     const completedStatement = statements.find(s => {
       const verbId = s.verb?.id || '';
-      return verbId === 'http://adlnet.gov/expapi/verbs/completed' ||
-             verbId === 'http://adlnet.gov/expapi/verbs/passed' ||
-             verbId.includes('completed') ||
-             verbId.includes('passed');
+      return verbTracker.isCompletionVerb(verbId);
     });
     
     if (completedStatement) {
       const verbId = completedStatement.verb?.id || '';
-      completionStatus = verbId.includes('passed') ? 'passed' : 'completed';
+      const verbConfig = verbTracker.getVerbConfig(verbId);
+      // Determine completion status based on verb action
+      if (verbConfig.action === 'mark_passed') {
+        completionStatus = 'passed';
+      } else if (verbConfig.action === 'mark_failed') {
+        completionStatus = 'failed';
+      } else {
+        completionStatus = 'completed';
+      }
       completedAt = completedStatement.timestamp || completedStatement.stored;
       
       console.log(`[Progress Storage] Found completion statement: ${completionStatus} at ${completedAt}`);

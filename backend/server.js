@@ -23,6 +23,7 @@ import * as progressStorage from './progress-storage.js';
 import * as usersStorage from './users-storage.js';
 import { extractActivityIdFromXml } from './extract-activity-id.js';
 import { initializeTables } from './azure-tables.js';
+import * as verbTracker from './xapi-verb-tracker.js';
 
 dotenv.config();
 
@@ -1643,6 +1644,134 @@ app.get('/api/admin/progress', async (req, res) => {
 });
 
 // ============================================================================
+// xAPI Verb Tracking Admin Endpoints
+// ============================================================================
+
+// GET /api/admin/verbs - Get verb statistics and configurations
+app.get('/api/admin/verbs', async (req, res) => {
+  try {
+    requireAdmin(req);
+    
+    // Ensure verb tracker is initialized
+    await verbTracker.initializeVerbTracker().catch(err => {
+      console.error('[Admin Verbs] Verb tracker initialization error:', err);
+    });
+    
+    const stats = verbTracker.getVerbStats();
+    const allVerbs = verbTracker.getAllVerbs();
+    
+    res.json({
+      statistics: stats || {},
+      configuredVerbs: {
+        standard: Object.keys(allVerbs?.standard || {}).length,
+        custom: Object.keys(allVerbs?.custom || {}).length
+      },
+      verbConfigs: {
+        standard: allVerbs?.standard || {},
+        custom: allVerbs?.custom || {}
+      }
+    });
+  } catch (error) {
+    console.error('[Admin Verbs] Error:', error);
+    const status = error.message?.includes('Admin') ? 403 : error.message?.includes('Authentication') ? 401 : 500;
+    res.status(status).json({ 
+      error: error.message || 'Failed to retrieve verb statistics',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// POST /api/admin/verbs - Add custom verb configuration
+app.post('/api/admin/verbs', async (req, res) => {
+  try {
+    requireAdmin(req);
+    
+    const { verbId, config } = req.body;
+    if (!verbId || !config) {
+      return res.status(400).json({ error: 'verbId and config are required' });
+    }
+    
+    if (!config.category || !config.action || !config.description) {
+      return res.status(400).json({ error: 'config must include category, action, and description' });
+    }
+    
+    const verb = await verbTracker.addCustomVerb(verbId, config);
+    
+    res.json({ 
+      success: true, 
+      message: `Custom verb ${verbId} added`,
+      verb: verb
+    });
+  } catch (error) {
+    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
+    res.status(status).json({ error: error.message });
+  }
+});
+
+// PUT /api/admin/verbs/:verbId - Update custom verb configuration
+// PUT /api/admin/verbs/* - Update custom verb configuration
+// Using wildcard to handle verbIds with slashes (like http://id.tincanapi.com/verb/downloaded)
+app.put('/api/admin/verbs/*', async (req, res) => {
+  try {
+    requireAdmin(req);
+    
+    // Extract verbId from the wildcard path (everything after /api/admin/verbs/)
+    const verbId = decodeURIComponent(req.params[0] || '');
+    const { config } = req.body;
+    
+    if (!verbId) {
+      return res.status(400).json({ error: 'verbId is required' });
+    }
+    
+    if (!config) {
+      return res.status(400).json({ error: 'config is required' });
+    }
+    
+    const verb = await verbTracker.updateCustomVerb(verbId, config);
+    
+    res.json({ 
+      success: true, 
+      message: `Custom verb ${verbId} updated`,
+      verb: verb
+    });
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
+    res.status(status).json({ error: error.message });
+  }
+});
+
+// DELETE /api/admin/verbs/* - Remove custom verb configuration
+// Using wildcard to handle verbIds with slashes (like http://id.tincanapi.com/verb/downloaded)
+app.delete('/api/admin/verbs/*', async (req, res) => {
+  try {
+    requireAdmin(req);
+    
+    // Extract verbId from the wildcard path (everything after /api/admin/verbs/)
+    const verbId = decodeURIComponent(req.params[0] || '');
+    
+    if (!verbId) {
+      return res.status(400).json({ error: 'verbId is required' });
+    }
+    
+    await verbTracker.removeCustomVerb(verbId);
+    
+    res.json({ 
+      success: true, 
+      message: `Custom verb ${verbId} removed`
+    });
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
+    res.status(status).json({ error: error.message });
+  }
+});
+
+// ============================================================================
 // Frontend SPA Fallback Route (for client-side routing)
 // This ensures that refreshing on routes like /player/:courseId works
 // ============================================================================
@@ -1711,6 +1840,11 @@ Promise.all([
     if (tablesOk) {
       // Initialize default course if it doesn't exist
       await coursesStorage.initializeDefaultCourse();
+      
+      // Initialize verb tracker (load custom verbs and stats from Azure)
+      await verbTracker.initializeVerbTracker().catch(err => {
+        console.error('⚠️  Failed to initialize verb tracker:', err.message);
+      });
     }
     
     if (tablesOk && blobOk) {

@@ -136,7 +136,7 @@ export default function CourseManagement() {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        <div className="px-8 py-6 border-b border-border/50 bg-card/50 backdrop-blur-sm">
+        <div className="px-8 py-6 border-b border-border/50 glass shadow-glass">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-foreground">Course Management</h1>
