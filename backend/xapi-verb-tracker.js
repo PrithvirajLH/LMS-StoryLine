@@ -6,19 +6,22 @@
 
 import { getTableClient, retryOperation, TABLES } from './azure-tables.js';
 import './crypto-polyfill.js';
+import { verbLogger as logger } from './logger.js';
+
+// ============================================================================
+// Encoding Helpers for Azure Table Storage
+// ============================================================================
 
 /**
  * Encode verbId for use as Azure Table Storage RowKey
  * Azure RowKeys cannot contain: / \ # ?
- * Using base64url encoding (URL-safe base64)
  */
 function encodeVerbIdForRowKey(verbId) {
-  // Convert to base64url (URL-safe base64)
   return Buffer.from(verbId, 'utf8')
     .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
-    .replace(/=/g, ''); // Remove padding
+    .replace(/=/g, '');
 }
 
 /**
@@ -26,25 +29,21 @@ function encodeVerbIdForRowKey(verbId) {
  */
 function decodeVerbIdFromRowKey(encodedVerbId) {
   try {
-    // Add padding back if needed
     let base64 = encodedVerbId.replace(/-/g, '+').replace(/_/g, '/');
     while (base64.length % 4) {
       base64 += '=';
     }
     return Buffer.from(base64, 'base64').toString('utf8');
   } catch (e) {
-    // If decoding fails, return as-is (might be an old unencoded value)
     return encodedVerbId;
   }
 }
 
 /**
  * Encode a string for use in Azure Table Storage RowKey
- * Encodes all special characters that Azure doesn't allow: / \ # ? | @
  */
 function encodeForRowKey(str) {
   if (!str) return '';
-  // Use base64url encoding for safety
   return Buffer.from(str, 'utf8')
     .toString('base64')
     .replace(/\+/g, '-')
@@ -58,19 +57,20 @@ function encodeForRowKey(str) {
 function decodeFromRowKey(encodedStr) {
   if (!encodedStr) return '';
   try {
-    // Add padding back if needed
     let base64 = encodedStr.replace(/-/g, '+').replace(/_/g, '/');
     while (base64.length % 4) {
       base64 += '=';
     }
     return Buffer.from(base64, 'base64').toString('utf8');
   } catch (e) {
-    // If decoding fails, return as-is (might be an old unencoded value)
     return encodedStr;
   }
 }
 
-// Standard xAPI verbs from ADL registry
+// ============================================================================
+// Standard Verbs Configuration
+// ============================================================================
+
 const STANDARD_VERBS = {
   // Completion verbs
   'http://adlnet.gov/expapi/verbs/completed': {
@@ -149,13 +149,40 @@ const STANDARD_VERBS = {
   }
 };
 
-// Custom verb handlers configuration (loaded from Azure)
+// Custom verb handlers (loaded from Azure)
 let CUSTOM_VERBS = {};
 
-// Verb statistics tracking (persisted to Azure)
-// In-memory cache for performance, synced to Azure
+// Verb statistics cache with LRU eviction (synced with Azure)
+const MAX_CACHE_SIZE = parseInt(process.env.VERB_CACHE_MAX_SIZE || '10000', 10);
 const verbStatsCache = new Map();
 let isInitialized = false;
+
+/**
+ * LRU eviction - remove oldest entries when cache exceeds max size
+ */
+function evictOldestCacheEntries() {
+  if (verbStatsCache.size <= MAX_CACHE_SIZE) return;
+  
+  // Sort by lastUsed time and remove oldest entries
+  const entries = Array.from(verbStatsCache.entries());
+  entries.sort((a, b) => {
+    const timeA = a[1].lastUsed ? new Date(a[1].lastUsed).getTime() : 0;
+    const timeB = b[1].lastUsed ? new Date(b[1].lastUsed).getTime() : 0;
+    return timeA - timeB;
+  });
+  
+  // Remove oldest 10% when over limit
+  const toRemove = Math.ceil(entries.length * 0.1);
+  for (let i = 0; i < toRemove; i++) {
+    verbStatsCache.delete(entries[i][0]);
+  }
+  
+  logger.debug({ removed: toRemove, remaining: verbStatsCache.size }, 'Evicted old cache entries');
+}
+
+// ============================================================================
+// Initialization
+// ============================================================================
 
 /**
  * Initialize verb tracker - load custom verbs and statistics from Azure
@@ -167,10 +194,9 @@ export async function initializeVerbTracker() {
     await loadCustomVerbsFromAzure();
     await loadVerbStatsFromAzure();
     isInitialized = true;
-    console.log('[Verb Tracker] Initialized with Azure persistence');
+    logger.info('Verb tracker initialized');
   } catch (error) {
-    console.error('[Verb Tracker] Error initializing:', error);
-    // Continue with empty state if Azure fails
+    logger.error({ error: error.message }, 'Error initializing verb tracker');
     isInitialized = true;
   }
 }
@@ -179,53 +205,43 @@ export async function initializeVerbTracker() {
  * Load custom verbs from Azure Table Storage
  */
 async function loadCustomVerbsFromAzure() {
-  CUSTOM_VERBS = {}; // Initialize to empty object
+  CUSTOM_VERBS = {};
   
   try {
     const client = getTableClient('VERB_STATS');
     
-    // Try to create table if it doesn't exist
     try {
       await client.createTable();
     } catch (createError) {
       if (createError.statusCode !== 409 && createError.code !== 'TableAlreadyExists') {
-        // If we can't create the table, log and continue (don't break initialization)
-        console.log('[Verb Tracker] Cannot create VerbStatistics table yet:', createError.message);
+        logger.debug({ error: createError.message }, 'Cannot create VerbStatistics table yet');
         return;
       }
     }
     
-    // Try to list entities - filter in JavaScript instead of OData to avoid syntax issues
     try {
       for await (const entity of client.listEntities()) {
-        // Filter by partition key in JavaScript (more reliable than OData filter)
         if (entity.partitionKey === 'custom_verbs') {
-          // Decode verbId from RowKey (handles both encoded and unencoded for backward compatibility)
           const verbId = decodeVerbIdFromRowKey(entity.rowKey);
           try {
             CUSTOM_VERBS[verbId] = JSON.parse(entity.config || '{}');
             CUSTOM_VERBS[verbId].isCustom = true;
           } catch (e) {
-            console.error(`[Verb Tracker] Error parsing custom verb ${verbId}:`, e);
+            logger.error({ verbId, error: e.message }, 'Error parsing custom verb');
           }
         }
       }
       
-      console.log(`[Verb Tracker] Loaded ${Object.keys(CUSTOM_VERBS).length} custom verbs from Azure`);
+      logger.debug({ count: Object.keys(CUSTOM_VERBS).length }, 'Custom verbs loaded');
     } catch (listError) {
-      // If listing fails, table might not exist yet - that's OK
       if (listError.statusCode === 404 || listError.code === 'ResourceNotFound') {
-        console.log('[Verb Tracker] VerbStatistics table not found, will be created on first use');
+        logger.debug('VerbStatistics table not found');
       } else {
-        console.error('[Verb Tracker] Error listing custom verbs:', listError.message || listError);
+        logger.error({ error: listError.message }, 'Error listing custom verbs');
       }
     }
   } catch (error) {
-    if (error.message?.includes('not initialized')) {
-      console.log('[Verb Tracker] VerbStatistics table not initialized yet, will be created on first use');
-    } else {
-      console.error('[Verb Tracker] Error loading custom verbs:', error.message || error);
-    }
+    logger.error({ error: error.message }, 'Error loading custom verbs');
   }
 }
 
@@ -233,45 +249,34 @@ async function loadCustomVerbsFromAzure() {
  * Load verb statistics from Azure Table Storage
  */
 async function loadVerbStatsFromAzure() {
-  verbStatsCache.clear(); // Initialize to empty cache
+  verbStatsCache.clear();
   
   try {
     const client = getTableClient('VERB_STATS');
     
-    // Try to create table if it doesn't exist
     try {
       await client.createTable();
     } catch (createError) {
       if (createError.statusCode !== 409 && createError.code !== 'TableAlreadyExists') {
-        // If we can't create the table, log and continue (don't break initialization)
-        console.log('[Verb Tracker] Cannot create VerbStatistics table yet:', createError.message);
         return;
       }
     }
     
-    // Try to list entities - filter in JavaScript instead of OData to avoid syntax issues
     try {
       for await (const entity of client.listEntities()) {
-        // Filter by partition key in JavaScript (more reliable than OData filter)
         if (entity.partitionKey === 'verb_stats') {
-          // Decode RowKey (handles both encoded and unencoded for backward compatibility)
-          // RowKey format: encodedVerbId|encodedUserId|encodedActivityId
           let key = entity.rowKey;
           
-          // If verbId, userId, activityId fields exist, reconstruct the key from original values
           if (entity.verbId && entity.userId && entity.activityId) {
             key = `${entity.verbId}|${entity.userId}|${entity.activityId}`;
           } else {
-            // Try to decode all parts if they're encoded
             const parts = key.split('|');
             if (parts.length >= 3) {
-              // Decode all three parts
-              parts[0] = decodeFromRowKey(parts[0]); // verbId
-              parts[1] = decodeFromRowKey(parts[1]); // userId
-              parts[2] = decodeFromRowKey(parts[2]); // activityId
+              parts[0] = decodeFromRowKey(parts[0]);
+              parts[1] = decodeFromRowKey(parts[1]);
+              parts[2] = decodeFromRowKey(parts[2]);
               key = parts.join('|');
             } else if (parts.length >= 1) {
-              // Legacy format: only verbId was encoded
               parts[0] = decodeVerbIdFromRowKey(parts[0]);
               key = parts.join('|');
             }
@@ -283,23 +288,20 @@ async function loadVerbStatsFromAzure() {
         }
       }
       
-      console.log(`[Verb Tracker] Loaded ${verbStatsCache.size} verb statistics from Azure`);
+      logger.debug({ count: verbStatsCache.size }, 'Verb statistics loaded');
     } catch (listError) {
-      // If listing fails, table might not exist yet - that's OK
-      if (listError.statusCode === 404 || listError.code === 'ResourceNotFound') {
-        console.log('[Verb Tracker] VerbStatistics table not found, will be created on first use');
-      } else {
-        console.error('[Verb Tracker] Error listing verb statistics:', listError.message || listError);
+      if (listError.statusCode !== 404 && listError.code !== 'ResourceNotFound') {
+        logger.error({ error: listError.message }, 'Error listing verb statistics');
       }
     }
   } catch (error) {
-    if (error.message?.includes('not initialized')) {
-      console.log('[Verb Tracker] VerbStatistics table not initialized yet, will be created on first use');
-    } else {
-      console.error('[Verb Tracker] Error loading verb statistics:', error.message || error);
-    }
+    logger.error({ error: error.message }, 'Error loading verb statistics');
   }
 }
+
+// ============================================================================
+// Verb Statistics Persistence
+// ============================================================================
 
 /**
  * Save custom verb to Azure
@@ -308,7 +310,6 @@ async function saveCustomVerbToAzure(verbId, config) {
   try {
     const client = getTableClient('VERB_STATS');
     
-    // Ensure table exists
     try {
       await client.createTable();
     } catch (createError) {
@@ -317,20 +318,19 @@ async function saveCustomVerbToAzure(verbId, config) {
       }
     }
     
-    // Encode verbId for RowKey (Azure doesn't allow / \ # ? in RowKeys)
     const encodedRowKey = encodeVerbIdForRowKey(verbId);
     
     const entity = {
       partitionKey: 'custom_verbs',
       rowKey: encodedRowKey,
-      verbId: verbId, // Store original verbId as a field for easy access
+      verbId: verbId,
       config: JSON.stringify(config),
       updatedAt: new Date().toISOString()
     };
     
     await retryOperation(() => client.upsertEntity(entity, 'Replace'));
   } catch (error) {
-    console.error(`[Verb Tracker] Error saving custom verb to Azure:`, error);
+    logger.error({ verbId, error: error.message }, 'Error saving custom verb');
     throw error;
   }
 }
@@ -341,12 +341,11 @@ async function saveCustomVerbToAzure(verbId, config) {
 async function deleteCustomVerbFromAzure(verbId) {
   try {
     const client = getTableClient('VERB_STATS');
-    // Encode verbId for RowKey lookup
     const encodedRowKey = encodeVerbIdForRowKey(verbId);
     await retryOperation(() => client.deleteEntity('custom_verbs', encodedRowKey));
   } catch (error) {
     if (error.statusCode !== 404) {
-      console.error(`[Verb Tracker] Error deleting custom verb from Azure:`, error);
+      logger.error({ verbId, error: error.message }, 'Error deleting custom verb');
       throw error;
     }
   }
@@ -359,27 +358,24 @@ async function saveVerbStatsToAzure(verbId, userId, activityId, count, lastUsed)
   try {
     const client = getTableClient('VERB_STATS');
     
-    // Ensure table exists
     try {
       await client.createTable();
     } catch (createError) {
       if (createError.statusCode !== 409 && createError.code !== 'TableAlreadyExists') {
-        // If we can't create the table, log and continue (don't break the app)
-        console.error(`[Verb Tracker] Cannot create VerbStatistics table:`, createError.message);
+        logger.error({ error: createError.message }, 'Cannot create VerbStatistics table');
         return;
       }
     }
     
-    // Encode all parts of the RowKey (Azure doesn't allow / \ # ? | @ in RowKeys)
-    // Format: encodedVerbId|encodedUserId|encodedActivityId
     const encodedVerbId = encodeForRowKey(verbId);
     const encodedUserId = encodeForRowKey(userId);
     const encodedActivityId = encodeForRowKey(activityId);
     const key = `${encodedVerbId}|${encodedUserId}|${encodedActivityId}`;
+    
     const entity = {
       partitionKey: 'verb_stats',
       rowKey: key,
-      verbId: verbId, // Store original values as fields for easy access
+      verbId: verbId,
       userId: userId,
       activityId: activityId,
       count: count.toString(),
@@ -389,10 +385,13 @@ async function saveVerbStatsToAzure(verbId, userId, activityId, count, lastUsed)
     
     await retryOperation(() => client.upsertEntity(entity, 'Replace'));
   } catch (error) {
-    console.error(`[Verb Tracker] Error saving verb stats to Azure:`, error);
-    // Don't throw - stats are cached in memory, Azure write failure shouldn't break the app
+    logger.error({ verbId, error: error.message }, 'Error saving verb stats');
   }
 }
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 /**
  * Get verb configuration
@@ -407,64 +406,33 @@ export function getVerbConfig(verbId) {
     };
   }
   
-  // Check custom verbs first
   if (CUSTOM_VERBS[verbId]) {
     return CUSTOM_VERBS[verbId];
   }
   
-  // Check standard verbs
   if (STANDARD_VERBS[verbId]) {
     return STANDARD_VERBS[verbId];
   }
   
-  // Check if verb ID contains keywords (fallback detection)
+  // Fallback detection by keyword
   const verbIdLower = verbId.toLowerCase();
+  
   if (verbIdLower.includes('completed') || verbIdLower.includes('complete')) {
-    return {
-      category: 'completion',
-      action: 'mark_completed',
-      description: 'Completion verb (detected)',
-      isDetected: true
-    };
+    return { category: 'completion', action: 'mark_completed', description: 'Completion verb (detected)', isDetected: true };
   }
-  
   if (verbIdLower.includes('passed') || verbIdLower.includes('pass')) {
-    return {
-      category: 'completion',
-      action: 'mark_passed',
-      description: 'Pass verb (detected)',
-      isDetected: true
-    };
+    return { category: 'completion', action: 'mark_passed', description: 'Pass verb (detected)', isDetected: true };
   }
-  
   if (verbIdLower.includes('failed') || verbIdLower.includes('fail')) {
-    return {
-      category: 'completion',
-      action: 'mark_failed',
-      description: 'Fail verb (detected)',
-      isDetected: true
-    };
+    return { category: 'completion', action: 'mark_failed', description: 'Fail verb (detected)', isDetected: true };
   }
-  
   if (verbIdLower.includes('initialized') || verbIdLower.includes('launched') || verbIdLower.includes('started')) {
-    return {
-      category: 'progress',
-      action: 'mark_started',
-      description: 'Start verb (detected)',
-      isDetected: true
-    };
+    return { category: 'progress', action: 'mark_started', description: 'Start verb (detected)', isDetected: true };
   }
-  
   if (verbIdLower.includes('downloaded') || verbIdLower.includes('download')) {
-    return {
-      category: 'interaction',
-      action: 'track_download',
-      description: 'Download verb (detected)',
-      isDetected: true
-    };
+    return { category: 'interaction', action: 'track_download', description: 'Download verb (detected)', isDetected: true };
   }
   
-  // Unknown verb - return default
   return {
     category: 'unknown',
     action: 'track_verb',
@@ -475,7 +443,7 @@ export function getVerbConfig(verbId) {
 }
 
 /**
- * Track verb usage for statistics (persisted to Azure)
+ * Track verb usage for statistics
  */
 export async function trackVerbUsage(verbId, userId, activityId) {
   if (!verbId) return;
@@ -485,24 +453,24 @@ export async function trackVerbUsage(verbId, userId, activityId) {
   const newCount = cached.count + 1;
   const lastUsed = new Date().toISOString();
   
-  // Update cache
   verbStatsCache.set(key, { count: newCount, lastUsed });
   
-  // Persist to Azure (async, don't wait)
+  // LRU eviction to prevent unbounded memory growth
+  evictOldestCacheEntries();
+  
+  // Persist async
   saveVerbStatsToAzure(verbId, userId, activityId, newCount, lastUsed).catch(err => {
-    console.error(`[Verb Tracker] Failed to persist verb stats:`, err);
+    logger.error({ verbId, error: err.message }, 'Failed to persist verb stats');
   });
   
-  // Log custom/unknown verbs
   const config = getVerbConfig(verbId);
   if (config.isCustom || config.isUnknown) {
-    console.log(`[Verb Tracker] Custom/Unknown verb detected: ${verbId}`);
-    console.log(`[Verb Tracker] User: ${userId}, Activity: ${activityId}`);
+    logger.debug({ verbId, userId, activityId }, 'Custom/Unknown verb detected');
   }
 }
 
 /**
- * Get verb statistics (from cache, which is synced with Azure)
+ * Get verb statistics
  */
 export function getVerbStats() {
   const stats = {};
@@ -522,13 +490,11 @@ export function getVerbStats() {
     stats[verbId].users.add(userId);
     stats[verbId].activities.add(activityId);
     
-    // Track most recent lastUsed
     if (!stats[verbId].lastUsed || (lastUsed && lastUsed > stats[verbId].lastUsed)) {
       stats[verbId].lastUsed = lastUsed;
     }
   });
   
-  // Convert Sets to arrays for JSON serialization
   Object.values(stats).forEach(stat => {
     stat.users = Array.from(stat.users);
     stat.activities = Array.from(stat.activities);
@@ -537,73 +503,6 @@ export function getVerbStats() {
   });
   
   return stats;
-}
-
-/**
- * Calculate verb statistics from stored xAPI statements
- * Useful for rebuilding stats or getting accurate counts
- */
-export async function calculateVerbStatsFromStatements() {
-  try {
-    const client = getTableClient('STATEMENTS');
-    const stats = {};
-    
-    console.log('[Verb Tracker] Calculating verb statistics from stored xAPI statements...');
-    
-    // Query all statements (this might be slow for large datasets)
-    let count = 0;
-    for await (const entity of client.listEntities()) {
-      try {
-        const statement = JSON.parse(entity.statement || '{}');
-        const verbId = statement.verb?.id || '';
-        const actor = statement.actor || {};
-        const activityId = statement.object?.id || '';
-        const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : 'unknown';
-        const timestamp = statement.timestamp || statement.stored || new Date().toISOString();
-        
-        if (!verbId) continue;
-        
-        if (!stats[verbId]) {
-          stats[verbId] = {
-            verbId,
-            totalCount: 0,
-            users: new Set(),
-            activities: new Set(),
-            lastUsed: null
-          };
-        }
-        
-        stats[verbId].totalCount++;
-        stats[verbId].users.add(userEmail);
-        stats[verbId].activities.add(activityId);
-        
-        if (!stats[verbId].lastUsed || timestamp > stats[verbId].lastUsed) {
-          stats[verbId].lastUsed = timestamp;
-        }
-        
-        count++;
-        if (count % 1000 === 0) {
-          console.log(`[Verb Tracker] Processed ${count} statements...`);
-        }
-      } catch (e) {
-        console.error('[Verb Tracker] Error parsing statement:', e);
-      }
-    }
-    
-    // Convert Sets to arrays
-    Object.values(stats).forEach(stat => {
-      stat.users = Array.from(stat.users);
-      stat.activities = Array.from(stat.activities);
-      stat.uniqueUsers = stat.users.length;
-      stat.uniqueActivities = stat.activities.length;
-    });
-    
-    console.log(`[Verb Tracker] Calculated statistics from ${count} statements`);
-    return stats;
-  } catch (error) {
-    console.error('[Verb Tracker] Error calculating stats from statements:', error);
-    return {};
-  }
 }
 
 /**
@@ -617,7 +516,7 @@ export async function processCustomVerb(statement, context) {
     try {
       return await config.customHandler(statement, context);
     } catch (error) {
-      console.error(`[Verb Tracker] Error in custom handler for ${verbId}:`, error);
+      logger.error({ verbId, error: error.message }, 'Error in custom handler');
       return null;
     }
   }
@@ -658,48 +557,37 @@ export function getAllVerbs() {
 }
 
 /**
- * Add custom verb configuration (persisted to Azure)
+ * Add custom verb configuration
  */
 export async function addCustomVerb(verbId, config) {
   if (!verbId || !config) {
     throw new Error('verbId and config are required');
   }
   
-  CUSTOM_VERBS[verbId] = {
-    ...config,
-    isCustom: true
-  };
-  
-  // Persist to Azure
+  CUSTOM_VERBS[verbId] = { ...config, isCustom: true };
   await saveCustomVerbToAzure(verbId, CUSTOM_VERBS[verbId]);
   
-  console.log(`[Verb Tracker] Added custom verb: ${verbId}`);
+  logger.info({ verbId }, 'Custom verb added');
   return CUSTOM_VERBS[verbId];
 }
 
 /**
- * Update custom verb configuration (persisted to Azure)
+ * Update custom verb configuration
  */
 export async function updateCustomVerb(verbId, config) {
   if (!CUSTOM_VERBS[verbId]) {
     throw new Error(`Custom verb ${verbId} not found`);
   }
   
-  CUSTOM_VERBS[verbId] = {
-    ...CUSTOM_VERBS[verbId],
-    ...config,
-    isCustom: true
-  };
-  
-  // Persist to Azure
+  CUSTOM_VERBS[verbId] = { ...CUSTOM_VERBS[verbId], ...config, isCustom: true };
   await saveCustomVerbToAzure(verbId, CUSTOM_VERBS[verbId]);
   
-  console.log(`[Verb Tracker] Updated custom verb: ${verbId}`);
+  logger.info({ verbId }, 'Custom verb updated');
   return CUSTOM_VERBS[verbId];
 }
 
 /**
- * Remove custom verb (persisted to Azure)
+ * Remove custom verb
  */
 export async function removeCustomVerb(verbId) {
   if (!CUSTOM_VERBS[verbId]) {
@@ -707,11 +595,9 @@ export async function removeCustomVerb(verbId) {
   }
   
   delete CUSTOM_VERBS[verbId];
-  
-  // Delete from Azure
   await deleteCustomVerbFromAzure(verbId);
   
-  console.log(`[Verb Tracker] Removed custom verb: ${verbId}`);
+  logger.info({ verbId }, 'Custom verb removed');
   return true;
 }
 
@@ -727,4 +613,68 @@ export function getCustomVerb(verbId) {
  */
 export function getAllCustomVerbs() {
   return CUSTOM_VERBS;
+}
+
+/**
+ * Calculate verb statistics from stored xAPI statements
+ */
+export async function calculateVerbStatsFromStatements() {
+  try {
+    const client = getTableClient('STATEMENTS');
+    const stats = {};
+    
+    logger.info('Calculating verb statistics from statements...');
+    
+    let count = 0;
+    for await (const entity of client.listEntities()) {
+      try {
+        const statement = JSON.parse(entity.statement || '{}');
+        const verbId = statement.verb?.id || '';
+        const actor = statement.actor || {};
+        const activityId = statement.object?.id || '';
+        const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : 'unknown';
+        const timestamp = statement.timestamp || statement.stored || new Date().toISOString();
+        
+        if (!verbId) continue;
+        
+        if (!stats[verbId]) {
+          stats[verbId] = {
+            verbId,
+            totalCount: 0,
+            users: new Set(),
+            activities: new Set(),
+            lastUsed: null
+          };
+        }
+        
+        stats[verbId].totalCount++;
+        stats[verbId].users.add(userEmail);
+        stats[verbId].activities.add(activityId);
+        
+        if (!stats[verbId].lastUsed || timestamp > stats[verbId].lastUsed) {
+          stats[verbId].lastUsed = timestamp;
+        }
+        
+        count++;
+        if (count % 1000 === 0) {
+          logger.debug({ count }, 'Processing statements...');
+        }
+      } catch (e) {
+        logger.error({ error: e.message }, 'Error parsing statement');
+      }
+    }
+    
+    Object.values(stats).forEach(stat => {
+      stat.users = Array.from(stat.users);
+      stat.activities = Array.from(stat.activities);
+      stat.uniqueUsers = stat.users.length;
+      stat.uniqueActivities = stat.activities.length;
+    });
+    
+    logger.info({ count }, 'Calculated statistics from statements');
+    return stats;
+  } catch (error) {
+    logger.error({ error: error.message }, 'Error calculating stats from statements');
+    return {};
+  }
 }

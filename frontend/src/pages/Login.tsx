@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import api from "../services/api";
-import { setToken, setUser } from "../services/auth";
+import { handleAuthResponse } from "../services/auth";
 
 const Login = () => {
   const navigate = useNavigate();
@@ -25,12 +25,12 @@ const Login = () => {
 
     try {
       const response = await api.post('/api/auth/login', { email: formData.email, password: formData.password });
-      setToken(response.data.token);
-      setUser(response.data.user);
+      handleAuthResponse(response.data);
       toast.success("Welcome back!");
-      navigate("/courses");
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Login failed');
+      navigate("/dashboard");
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Login failed');
     } finally {
       setIsLoading(false);
     }

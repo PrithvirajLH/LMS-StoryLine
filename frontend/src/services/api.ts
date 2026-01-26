@@ -1,23 +1,63 @@
 import axios from 'axios';
+import { getCsrfToken, getToken } from './auth';
 
-// Use relative URL in development (goes through Vite proxy) or absolute URL from env
-// When accessing from network, relative URLs work because Vite proxy handles it
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+// Dynamically determine API base URL based on environment
+function getApiBaseUrl(): string {
+  // If explicitly set in environment variable, use it
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+
+  // In browser environment, detect API URL dynamically
+  if (typeof window !== 'undefined') {
+    // Development mode: Use relative URLs (Vite proxy handles /api routes)
+    if (import.meta.env.DEV) {
+      return '';
+    }
+    
+    // Production mode: Use window.location.origin
+    return window.location.origin;
+  }
+
+  return '';
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 const api = axios.create({
-  baseURL: API_BASE_URL, // Empty string = relative URLs, uses Vite proxy
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  // Enable credentials (cookies) for all requests
+  withCredentials: true,
 });
 
-// Request interceptor to add auth token
+// Retry configuration
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Request interceptor to add auth token and CSRF token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token');
+    // Add CSRF token for state-changing requests
+    const csrfToken = getCsrfToken();
+    if (csrfToken && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(config.method?.toUpperCase() || '')) {
+      config.headers['X-CSRF-Token'] = csrfToken;
+    }
+    
+    // Add Bearer token for backwards compatibility
+    // (httpOnly cookie is primary, but some clients may need this)
+    const token = getToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    
+    // Initialize retry count
+    config.headers['x-retry-count'] = config.headers['x-retry-count'] || '0';
+    
     return config;
   },
   (error) => {
@@ -25,25 +65,64 @@ api.interceptors.request.use(
   }
 );
 
-// Response interceptor to handle errors
+// Response interceptor to handle errors with retry logic
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Unauthorized - clear token and redirect to login
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
+  async (error) => {
+    const config = error.config;
+    
+    // Get current retry count
+    const retryCount = parseInt(config?.headers?.['x-retry-count'] || '0', 10);
+    
+    // Check if we should retry (503 = backend starting, or network error)
+    const shouldRetry = (
+      error.response?.status === 503 || 
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ERR_NETWORK'
+    ) && retryCount < MAX_RETRIES;
+    
+    if (shouldRetry && config) {
+      // Increment retry count
+      config.headers['x-retry-count'] = String(retryCount + 1);
+      
+      // Wait before retrying (exponential backoff)
+      await sleep(RETRY_DELAY * (retryCount + 1));
+      
+      // Retry logging removed for production (was: console.log)
+      return api.request(config);
     }
+    
+    // Handle 401 (Unauthorized) - but NOT on login/register pages
+    // 409 (Conflict) for "user exists" should NOT trigger logout
+    if (error.response?.status === 401) {
+      const isAuthPage = window.location.pathname.includes('/login') || 
+                         window.location.pathname.includes('/register');
+      
+      // Only clear and redirect if not on auth pages
+      if (!isAuthPage) {
+        // Clear local storage
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('csrfToken');
+        
+        window.location.href = '/login';
+      }
+    }
+    
+    // Handle 403 (CSRF error) - automatically refresh token and retry
+    if (error.response?.status === 403 && error.response?.data?.error === 'Invalid CSRF token') {
+      try {
+        // Try to refresh CSRF token
+        await api.get('/api/auth/csrf');
+        // Retry the original request
+        return api.request(config);
+      } catch {
+        // CSRF refresh failed - let the error propagate
+      }
+    }
+    
     return Promise.reject(error);
   }
 );
 
 export default api;
-
-
-
-
-
-
-

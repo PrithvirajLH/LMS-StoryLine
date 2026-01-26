@@ -21,13 +21,30 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+.cursor/
 
 # Azure
 .azure/
 
+# Test files and temporary data
+xapi/
+*.test.js
+*.spec.js
+test-login.json
 
+# Documentation (keep only README.md files)
+*.md
+!README.md
+!**/README.md
 
+# Temporary files
+*.tmp
+*.cache
+.vite-cache-clear.md
 
-
+# Test data
+test/
+**/test/
+**/tests/
 
 

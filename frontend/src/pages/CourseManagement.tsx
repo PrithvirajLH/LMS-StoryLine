@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +17,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Trash2, AlertTriangle, FileText, Folder, Key, Image, Play, Sparkles, Info, X } from "lucide-react";
+import { Trash2, AlertTriangle, FileText, Folder, Key, Image, Play, Sparkles, Info, X, Edit, BookCheck } from "lucide-react";
 import { toast } from "sonner";
 import api from "../services/api";
 import { getUser } from "../services/auth";
@@ -38,6 +39,7 @@ export default function CourseManagement() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showCourseForm, setShowCourseForm] = useState(false);
+  const [editingCourseId, setEditingCourseId] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [courseToDelete, setCourseToDelete] = useState<string | null>(null);
   const [courseForm, setCourseForm] = useState({
@@ -95,6 +97,49 @@ export default function CourseManagement() {
     }
   };
 
+  const handleEditCourse = (course: Course) => {
+    setEditingCourseId(course.courseId);
+    setCourseForm({
+      title: course.title,
+      description: course.description || '',
+      thumbnailUrl: course.thumbnailUrl || '',
+      launchFile: course.launchFile || 'index_lms.html',
+      activityId: course.activityId || '',
+      blobPath: course.blobPath || '',
+    });
+    setShowCourseForm(true);
+  };
+
+  const handleUpdateCourse = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCourseId) return;
+    
+    try {
+      setError('');
+      const courseData = {
+        ...courseForm,
+        coursePath: courseForm.blobPath
+      };
+      await api.put(`/api/admin/courses/${editingCourseId}`, courseData);
+      setShowCourseForm(false);
+      setEditingCourseId(null);
+      setCourseForm({
+        title: '',
+        description: '',
+        thumbnailUrl: '',
+        launchFile: 'index_lms.html',
+        activityId: '',
+        blobPath: '',
+      });
+      toast.success('Course updated successfully');
+      loadCourses();
+    } catch (err: unknown) {
+      const errorMessage = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to update course';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    }
+  };
+
   const handleDeleteCourse = (courseId: string) => {
     setCourseToDelete(courseId);
     setDeleteDialogOpen(true);
@@ -136,60 +181,105 @@ export default function CourseManagement() {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        <div className="px-8 py-6 border-b border-border/50 glass shadow-glass">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-foreground">Course Management</h1>
-              <p className="text-muted-foreground mt-1">Create, view, and manage courses</p>
+        {/* Header Section */}
+        <motion.header
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="border-b border-border bg-card/50 backdrop-blur-sm"
+        >
+          <div className="px-8 py-8">
+            <div className="flex items-start justify-between gap-6">
+              <div className="flex flex-col gap-2 flex-1">
+                <h1 className="text-5xl lg:text-6xl font-serif font-bold text-foreground tracking-tight flex items-center gap-3">
+                  <div 
+                    className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                    style={{
+                      background: 'linear-gradient(135deg, #8B5FBF, #C44569)'
+                    }}
+                  >
+                    <BookCheck className="h-6 w-6 text-white" />
+                  </div>
+                  Course Management
+                </h1>
+                <p className="text-muted-foreground text-lg font-serif">
+                  Create, view, and manage courses
+                </p>
+              </div>
+              <Button 
+                onClick={() => {
+                  if (showCourseForm) {
+                    setShowCourseForm(false);
+                    setEditingCourseId(null);
+                    setCourseForm({
+                      title: '',
+                      description: '',
+                      thumbnailUrl: '',
+                      launchFile: 'index_lms.html',
+                      activityId: '',
+                      blobPath: '',
+                    });
+                  } else {
+                    setShowCourseForm(true);
+                  }
+                }} 
+                className="w-full sm:w-auto h-11"
+                variant={showCourseForm ? "outline" : "default"}
+              >
+                {showCourseForm ? (
+                  <>
+                    <X className="h-4 w-4 mr-2" />
+                    Cancel
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Create New Course
+                  </>
+                )}
+              </Button>
             </div>
-            <Button 
-              onClick={() => setShowCourseForm(!showCourseForm)} 
-              className="w-full sm:w-auto"
-              variant={showCourseForm ? "outline" : "default"}
-            >
-              {showCourseForm ? (
-                <>
-                  <X className="h-4 w-4 mr-2" />
-                  Cancel
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4 mr-2" />
-                  Create New Course
-                </>
-              )}
-            </Button>
           </div>
-        </div>
+        </motion.header>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="p-8">
+          <div className="macro-padding pb-24">
             {error && (
-              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20">
+              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20 text-lg font-serif">
                 {error}
               </div>
             )}
 
             {showCourseForm && (
-              <Card className="border-2 shadow-lg mb-6">
-                <CardHeader className="bg-gradient-to-r from-primary/5 to-primary/10 border-b">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4 }}
+              >
+                <Card className="bg-muted/40 border-border shadow-lg mb-8">
+                <CardHeader className="border-b">
                   <div className="flex items-center gap-3">
-                    <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <FileText className="h-6 w-6 text-primary" />
+                    <div 
+                      className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                      style={{
+                        background: 'linear-gradient(135deg, #FF6B9D, #C44569, #8B5FBF)'
+                      }}
+                    >
+                      <FileText className="h-6 w-6 text-white" />
                     </div>
                     <div>
-                      <CardTitle className="text-2xl">Create New Course</CardTitle>
-                      <CardDescription className="text-sm mt-1">Add a new course to your learning management system</CardDescription>
+                      <CardTitle className="text-2xl font-serif font-semibold">{editingCourseId ? 'Edit Course' : 'Create New Course'}</CardTitle>
+                      <CardDescription className="text-base mt-1 font-serif">{editingCourseId ? 'Update the course details below' : 'Add a new course to your learning management system'}</CardDescription>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent className="p-6">
-                  <form onSubmit={handleCreateCourse} className="space-y-6">
+                  <form onSubmit={editingCourseId ? handleUpdateCourse : handleCreateCourse} className="space-y-6">
                     {/* Basic Information Section */}
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 pb-2 border-b">
-                        <FileText className="h-5 w-5 text-primary" />
-                        <h3 className="text-lg font-semibold">Basic Information</h3>
+                        <FileText className="h-5 w-5 text-foreground" />
+                        <h3 className="text-lg font-serif font-semibold">Basic Information</h3>
                       </div>
                       
                       <div className="space-y-2">
@@ -222,8 +312,8 @@ export default function CourseManagement() {
                     {/* Storage & Path Section */}
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 pb-2 border-b">
-                        <Folder className="h-5 w-5 text-primary" />
-                        <h3 className="text-lg font-semibold">Storage Configuration</h3>
+                        <Folder className="h-5 w-5 text-foreground" />
+                        <h3 className="text-lg font-serif font-semibold">Storage Configuration</h3>
                       </div>
 
                       <div className="space-y-3">
@@ -255,8 +345,8 @@ export default function CourseManagement() {
                     {/* xAPI Configuration Section */}
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 pb-2 border-b">
-                        <Key className="h-5 w-5 text-primary" />
-                        <h3 className="text-lg font-semibold">xAPI Configuration</h3>
+                        <Key className="h-5 w-5 text-foreground" />
+                        <h3 className="text-lg font-serif font-semibold">xAPI Configuration</h3>
                       </div>
 
                       <div className="space-y-3">
@@ -317,8 +407,8 @@ export default function CourseManagement() {
                     {/* Launch & Media Section */}
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 pb-2 border-b">
-                        <Play className="h-5 w-5 text-primary" />
-                        <h3 className="text-lg font-semibold">Launch & Media</h3>
+                        <Play className="h-5 w-5 text-foreground" />
+                        <h3 className="text-lg font-serif font-semibold">Launch & Media</h3>
                       </div>
 
                       <div className="space-y-2">
@@ -405,12 +495,12 @@ export default function CourseManagement() {
                         {loading ? (
                           <>
                             <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
-                            Creating Course...
+                            {editingCourseId ? 'Updating Course...' : 'Creating Course...'}
                           </>
                         ) : (
                           <>
                             <Sparkles className="h-5 w-5 mr-2" />
-                            Create Course
+                            {editingCourseId ? 'Update Course' : 'Create Course'}
                           </>
                         )}
                       </Button>
@@ -418,14 +508,18 @@ export default function CourseManagement() {
                   </form>
                 </CardContent>
               </Card>
+              </motion.div>
             )}
 
             {loading ? (
               <div className="text-center py-16">
-                <p className="text-muted-foreground">Loading courses...</p>
+                <div className="inline-flex items-center gap-2 text-muted-foreground">
+                  <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-lg font-serif">Loading courses...</p>
+                </div>
               </div>
             ) : (
-              <Card>
+              <Card className="bg-muted/40 border-border">
                 <CardContent className="p-0">
                   <Table>
                     <TableHeader>
@@ -445,13 +539,24 @@ export default function CourseManagement() {
                           <TableCell>{course.enrollmentCount}</TableCell>
                           <TableCell>{course.attemptCount}</TableCell>
                           <TableCell>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() => handleDeleteCourse(course.courseId)}
-                            >
-                              Delete
-                            </Button>
+                            <div className="flex gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEditCourse(course)}
+                              >
+                                <Edit className="h-4 w-4 mr-1" />
+                                Edit
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => handleDeleteCourse(course.courseId)}
+                              >
+                                <Trash2 className="h-4 w-4 mr-1" />
+                                Delete
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}

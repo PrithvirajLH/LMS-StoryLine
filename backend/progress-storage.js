@@ -3,9 +3,22 @@
  * Tracks user enrollment, completion, scores, and time spent
  */
 
-import { getTableClient, retryOperation, TABLES } from './azure-tables.js';
+import { getTableClient, retryOperation, TABLES, sanitizeODataValue, buildODataEqFilter } from './azure-tables.js';
 import * as xapiLRS from './xapi-lrs-azure.js';
 import * as verbTracker from './xapi-verb-tracker.js';
+import { progressLogger as logger } from './logger.js';
+
+// ============================================================================
+// Configuration (all values configurable via environment variables)
+// ============================================================================
+
+const MAX_STATEMENTS_PER_SYNC = parseInt(process.env.MAX_STATEMENTS_PER_SYNC || '5000', 10);
+const MAX_GAP_SECONDS = parseInt(process.env.MAX_GAP_SECONDS || '300', 10); // Default 5 minutes
+const DEFAULT_STATEMENTS_PER_COURSE = parseInt(process.env.DEFAULT_STATEMENTS_PER_COURSE || '80', 10);
+
+// ============================================================================
+// Table Initialization
+// ============================================================================
 
 /**
  * Initialize progress table
@@ -14,12 +27,16 @@ export async function initializeProgressTable() {
   try {
     const client = getTableClient('USER_PROGRESS');
     // Table will be created automatically on first use
-    console.log(`✓ Progress table '${TABLES.USER_PROGRESS}' ready`);
+    logger.info({ table: TABLES.USER_PROGRESS }, 'Progress table ready');
   } catch (error) {
-    console.error(`[Progress Storage] Error initializing table:`, error);
+    logger.error({ error: error.message }, 'Error initializing progress table');
     throw error;
   }
 }
+
+// ============================================================================
+// Progress CRUD Operations
+// ============================================================================
 
 /**
  * Get or create user progress for a course
@@ -35,27 +52,27 @@ async function getOrCreateProgress(userId, courseId) {
   
   try {
     const entity = await client.getEntity(partitionKey, rowKey);
-      return {
-        userId: entity.partitionKey,
-        courseId: entity.rowKey,
-        enrollmentStatus: entity.enrollmentStatus || 'not_enrolled',
-        completionStatus: entity.completionStatus || 'not_started',
-        score: entity.score || null,
-        progressPercent: entity.progressPercent !== undefined ? entity.progressPercent : null,
-        timeSpent: entity.timeSpent || 0, // in seconds
-        attempts: entity.attempts || 0, // number of times course was launched
-        enrolledAt: entity.enrolledAt || null,
-        startedAt: entity.startedAt || null,
-        completedAt: entity.completedAt || null,
-        lastAccessedAt: entity.lastAccessedAt || new Date().toISOString(),
-        updatedAt: entity.updatedAt || new Date().toISOString()
-      };
+    return {
+      userId: entity.partitionKey,
+      courseId: entity.rowKey,
+      enrollmentStatus: entity.enrollmentStatus || 'not_enrolled',
+      completionStatus: entity.completionStatus || 'not_started',
+      score: entity.score || null,
+      progressPercent: entity.progressPercent !== undefined ? entity.progressPercent : null,
+      timeSpent: entity.timeSpent || 0, // in seconds
+      attempts: entity.attempts || 0, // number of times course was launched
+      enrolledAt: entity.enrolledAt || null,
+      startedAt: entity.startedAt || null,
+      completedAt: entity.completedAt || null,
+      lastAccessedAt: entity.lastAccessedAt || new Date().toISOString(),
+      updatedAt: entity.updatedAt || new Date().toISOString()
+    };
   } catch (error) {
     if (error.statusCode === 404 || error.code === 'ResourceNotFound') {
       // Create new progress entry
       const newProgress = {
-        partitionKey: partitionKey, // Use string-converted userId
-        rowKey: rowKey, // Use string-converted courseId
+        partitionKey: partitionKey,
+        rowKey: rowKey,
         enrollmentStatus: 'enrolled',
         completionStatus: 'not_started',
         score: null,
@@ -96,8 +113,8 @@ export async function updateProgress(userId, courseId, updates) {
   }
   
   const client = getTableClient('USER_PROGRESS');
-  const partitionKey = String(userId); // Ensure it's a string
-  const rowKey = String(courseId); // Ensure it's a string
+  const partitionKey = String(userId);
+  const rowKey = String(courseId);
   
   const progress = await getOrCreateProgress(userId, courseId);
   
@@ -110,11 +127,9 @@ export async function updateProgress(userId, courseId, updates) {
   };
   
   // Only increment attempts if explicitly requested (e.g., on course launch)
-  // Don't auto-increment on every update (e.g., during sync)
   if (updates.attempts !== undefined) {
     updated.attempts = updates.attempts;
   } else {
-    // Keep existing attempts if not updating
     updated.attempts = progress.attempts || 0;
   }
   
@@ -126,46 +141,44 @@ export async function updateProgress(userId, courseId, updates) {
   // Set completedAt if completing
   if (updates.completionStatus === 'completed' || updates.completionStatus === 'passed') {
     updated.completedAt = updated.completedAt || new Date().toISOString();
-    // If score is provided, ensure it's a number
     if (updates.score !== undefined && updates.score !== null) {
       updated.score = typeof updates.score === 'number' ? updates.score : parseFloat(updates.score) || null;
     }
   }
   
-  // Ensure timeSpent is a number and preserve existing value if new value is 0 or invalid
+  // Handle timeSpent - preserve existing value if new value is 0 or invalid
   if (updates.timeSpent !== undefined) {
     const newTimeSpent = typeof updates.timeSpent === 'number' ? updates.timeSpent : parseFloat(updates.timeSpent) || 0;
-    // Only update if new value is greater than existing (don't overwrite with 0)
     if (newTimeSpent > 0) {
       updated.timeSpent = newTimeSpent;
-      console.log(`[Progress Storage] Updated timeSpent: ${newTimeSpent}s (was ${progress.timeSpent || 0}s)`);
+      logger.debug({ userId, courseId, timeSpent: newTimeSpent, prev: progress.timeSpent }, 'Updated timeSpent');
     } else if (progress.timeSpent > 0) {
-      updated.timeSpent = progress.timeSpent; // Keep existing timeSpent if new is 0
-      console.log(`[Progress Storage] Preserved existing timeSpent: ${progress.timeSpent}s (new value was 0)`);
+      updated.timeSpent = progress.timeSpent;
     } else {
-      updated.timeSpent = 0; // Both are 0, keep 0
+      updated.timeSpent = 0;
     }
   }
   
-  // Ensure progressPercent is saved to database
+  // Handle progressPercent
   if (updates.progressPercent !== undefined) {
-    updated.progressPercent = typeof updates.progressPercent === 'number' ? updates.progressPercent : parseFloat(updates.progressPercent) || 0;
+    updated.progressPercent = typeof updates.progressPercent === 'number' 
+      ? updates.progressPercent 
+      : parseFloat(updates.progressPercent) || 0;
   }
   
-  // Set startedAt if missing but course has been started (indicated by progress/time/status)
+  // Set startedAt if missing but course has been started
   if (!updated.startedAt) {
     const hasProgress = (updated.progressPercent && updated.progressPercent > 0) || 
                        (updated.timeSpent && updated.timeSpent > 0) ||
                        (updated.completionStatus && updated.completionStatus !== 'not_started');
     if (hasProgress) {
-      // Use enrolledAt as fallback if available, otherwise use current time
       updated.startedAt = updated.enrolledAt || new Date().toISOString();
     }
   }
   
   const entity = {
-    partitionKey: partitionKey, // Use the string-converted userId
-    rowKey: rowKey, // Use the string-converted courseId
+    partitionKey: partitionKey,
+    rowKey: rowKey,
     enrollmentStatus: updated.enrollmentStatus,
     completionStatus: updated.completionStatus,
     score: updated.score,
@@ -181,7 +194,6 @@ export async function updateProgress(userId, courseId, updates) {
   
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
   
-  // Return updated progress with correct IDs
   return {
     ...updated,
     userId: partitionKey,
@@ -193,11 +205,18 @@ export async function updateProgress(userId, courseId, updates) {
  * Get all progress for a user
  */
 export async function getUserProgress(userId) {
+  if (!userId) {
+    return [];
+  }
+  
   const client = getTableClient('USER_PROGRESS');
   const progressList = [];
   
   try {
-    for await (const entity of client.listEntities({ queryOptions: { filter: `PartitionKey eq '${userId}'` } })) {
+    // Use safe OData filter
+    const filter = buildODataEqFilter('PartitionKey', userId);
+    
+    for await (const entity of client.listEntities({ queryOptions: { filter } })) {
       progressList.push({
         userId: entity.partitionKey,
         courseId: entity.rowKey,
@@ -215,7 +234,7 @@ export async function getUserProgress(userId) {
       });
     }
   } catch (error) {
-    console.error('[Progress Storage] Error getting user progress:', error);
+    logger.error({ userId, error: error.message }, 'Error getting user progress');
     return [];
   }
   
@@ -226,11 +245,18 @@ export async function getUserProgress(userId) {
  * Get progress for a specific course
  */
 export async function getCourseProgress(courseId) {
+  if (!courseId) {
+    return [];
+  }
+  
   const client = getTableClient('USER_PROGRESS');
   const progressList = [];
   
   try {
-    for await (const entity of client.listEntities({ queryOptions: { filter: `RowKey eq '${courseId}'` } })) {
+    // Use safe OData filter
+    const filter = buildODataEqFilter('RowKey', courseId);
+    
+    for await (const entity of client.listEntities({ queryOptions: { filter } })) {
       progressList.push({
         userId: entity.partitionKey,
         courseId: entity.rowKey,
@@ -247,45 +273,111 @@ export async function getCourseProgress(courseId) {
       });
     }
   } catch (error) {
-    console.error('[Progress Storage] Error getting course progress:', error);
+    logger.error({ courseId, error: error.message }, 'Error getting course progress');
     return [];
   }
   
   return progressList;
 }
 
+// ============================================================================
+// Progress Calculation from xAPI Statements
+// ============================================================================
+
+/**
+ * Calculate time spent from statements (excluding idle gaps)
+ */
+function calculateTimeSpent(statements) {
+  if (!statements || statements.length <= 1) {
+    return statements?.length ? 1 : 0;
+  }
+  
+  const sortedStatements = [...statements].sort((a, b) => {
+    const timeA = new Date(a.timestamp || a.stored || 0).getTime();
+    const timeB = new Date(b.timestamp || b.stored || 0).getTime();
+    return timeA - timeB;
+  });
+  
+  let totalActiveTime = 0;
+  
+  for (let i = 0; i < sortedStatements.length - 1; i++) {
+    const currentTime = new Date(sortedStatements[i].timestamp || sortedStatements[i].stored).getTime();
+    const nextTime = new Date(sortedStatements[i + 1].timestamp || sortedStatements[i + 1].stored).getTime();
+    
+    if (!isNaN(currentTime) && !isNaN(nextTime) && currentTime > 0 && nextTime > 0) {
+      const gapSeconds = Math.floor((nextTime - currentTime) / 1000);
+      
+      if (gapSeconds > 0 && gapSeconds <= MAX_GAP_SECONDS) {
+        totalActiveTime += gapSeconds;
+      }
+    }
+  }
+  
+  return totalActiveTime > 0 ? totalActiveTime : Math.max(1, sortedStatements.length);
+}
+
+/**
+ * Extract score from statement result
+ */
+function extractScore(result) {
+  if (!result?.score) {
+    return null;
+  }
+  
+  const { scaled, raw, max } = result.score;
+  
+  if (scaled !== undefined && scaled !== null) {
+    return Math.round(scaled * 100);
+  }
+  if (raw !== undefined && raw !== null && max !== undefined && max !== null && max > 0) {
+    return Math.round((raw / max) * 100);
+  }
+  if (raw !== undefined && raw !== null) {
+    return raw;
+  }
+  
+  return null;
+}
+
 /**
  * Calculate progress from xAPI statements
  */
-export async function calculateProgressFromStatements(userId, courseId, activityId) {
+export async function calculateProgressFromStatements(userId, courseId, activityId, registration = null) {
   try {
     // Normalize userId to email format for xAPI query
     const userEmail = userId.includes('@') ? userId : `${userId}@example.com`;
     
-    // Query ALL xAPI statements for this user (without activity filter)
-    // Storyline sends statements for slide activities (e.g., baseActivityId/slideId)
-    // We need to aggregate all statements that start with the base activity ID
-    const result = await xapiLRS.queryStatements({
-      agent: {
-        objectType: 'Agent',
-        mbox: `mailto:${userEmail}`
-      },
-      // Don't filter by activity - we'll filter in JavaScript to include all slide activities
-      limit: 1000
-    });
+    // Query ALL xAPI statements for this user
+    const allStatements = [];
+    let cursor = null;
     
-    // Extract statements array from result
-    // queryStatements returns: { status: 200, data: { statements: [...], more: '...' } }
-    const allStatements = result?.data?.statements || [];
+    do {
+      const result = await xapiLRS.queryStatements({
+        agent: {
+          objectType: 'Agent',
+          mbox: `mailto:${userEmail}`
+        },
+        registration: registration || undefined,
+        limit: 200,
+        cursor: cursor || undefined
+      });
+      
+      const batch = result?.data?.statements || [];
+      allStatements.push(...batch);
+      cursor = result?.data?.more || null;
+      
+      if (allStatements.length >= MAX_STATEMENTS_PER_SYNC) {
+        logger.warn({ userId, count: allStatements.length }, 'Statement cap reached, truncating');
+        break;
+      }
+    } while (cursor);
     
-    // Safety check: ensure statements is an array
     if (!Array.isArray(allStatements)) {
-      console.error('[Progress Storage] Invalid statements format:', typeof allStatements, allStatements);
+      logger.error({ userId, type: typeof allStatements }, 'Invalid statements format');
       return null;
     }
     
-    // Filter statements to include only those for this course (base activity ID or slide activities)
-    // Storyline activities: baseActivityId or baseActivityId/slideId
+    // Filter statements for this course
     const statements = allStatements.filter(s => {
       const objectId = s.object?.id || '';
       return objectId === activityId || objectId.startsWith(activityId + '/');
@@ -295,20 +387,21 @@ export async function calculateProgressFromStatements(userId, courseId, activity
       return null;
     }
     
-    console.log(`[Progress Storage] Found ${statements.length} statements (out of ${allStatements.length} total) for ${userEmail} / ${activityId}`);
+    logger.debug({ userId, courseId, count: statements.length, total: allStatements.length }, 'Found statements');
     
-    // Analyze statements to determine progress
+    // Initialize progress data
     let completionStatus = 'not_started';
     let score = null;
-    let timeSpent = 0; // in seconds
     let startedAt = null;
     let completedAt = null;
+    let completionStatementId = null;
+    let completionVerb = null;
+    let success = null;
     
-    // If there are any statements, the user has started the course
-    // This handles cases where Storyline doesn't send initialized/launched verbs
+    // If there are any statements, user has started
     if (statements.length > 0) {
       completionStatus = 'in_progress';
-      // Use the earliest statement timestamp as startedAt
+      
       const sortedByTime = [...statements].sort((a, b) => {
         const timeA = new Date(a.timestamp || a.stored || 0).getTime();
         const timeB = new Date(b.timestamp || b.stored || 0).getTime();
@@ -317,133 +410,66 @@ export async function calculateProgressFromStatements(userId, courseId, activity
       startedAt = sortedByTime[0]?.timestamp || sortedByTime[0]?.stored || null;
     }
     
-    // Find initial statement (started) - use verb tracker to detect start verbs
-    const initialStatement = statements.find(s => {
-      const verbId = s.verb?.id || '';
-      return verbTracker.isStartVerb(verbId);
-    });
+    // Find initial statement (started)
+    const initialStatement = statements.find(s => verbTracker.isStartVerb(s.verb?.id || ''));
     if (initialStatement) {
-      // Use the explicit initialized/launched timestamp if available
       startedAt = initialStatement.timestamp || initialStatement.stored || startedAt;
     }
     
-    // Find completion statement - use verb tracker to detect completion verbs
-    const completedStatement = statements.find(s => {
-      const verbId = s.verb?.id || '';
-      return verbTracker.isCompletionVerb(verbId);
-    });
+    // Find completion statement
+    const completedStatement = statements.find(s => verbTracker.isCompletionVerb(s.verb?.id || ''));
     
     if (completedStatement) {
       const verbId = completedStatement.verb?.id || '';
       const verbConfig = verbTracker.getVerbConfig(verbId);
-      // Determine completion status based on verb action
+      
+      completionStatementId = completedStatement.id || null;
+      completionVerb = verbId || null;
+      
+      if (typeof completedStatement.result?.success === 'boolean') {
+        success = completedStatement.result.success;
+      }
+      
+      // Determine completion status
       if (verbConfig.action === 'mark_passed') {
         completionStatus = 'passed';
       } else if (verbConfig.action === 'mark_failed') {
         completionStatus = 'failed';
+        success = false;
       } else {
         completionStatus = 'completed';
       }
+      
       completedAt = completedStatement.timestamp || completedStatement.stored;
+      score = extractScore(completedStatement.result);
       
-      console.log(`[Progress Storage] Found completion statement: ${completionStatus} at ${completedAt}`);
-      
-      // Extract score if available
-      if (completedStatement.result?.score) {
-        const rawScore = completedStatement.result.score.raw;
-        const scaledScore = completedStatement.result.score.scaled;
-        const maxScore = completedStatement.result.score.max;
-        const minScore = completedStatement.result.score.min;
-        
-        // Calculate percentage score
-        if (scaledScore !== undefined && scaledScore !== null) {
-          score = Math.round(scaledScore * 100);
-        } else if (rawScore !== undefined && rawScore !== null && maxScore !== undefined && maxScore !== null) {
-          score = Math.round((rawScore / maxScore) * 100);
-        } else if (rawScore !== undefined && rawScore !== null) {
-          score = rawScore; // Assume it's already a percentage
-        } else {
-          score = null;
-        }
-        
-        console.log(`[Progress Storage] Extracted score: ${score}%`);
-      }
+      logger.debug({ userId, courseId, status: completionStatus, completedAt }, 'Found completion');
     }
     
-    // Calculate time spent more accurately
-    // Sum up time differences between consecutive statements, excluding large gaps (user left and came back)
-    if (statements.length > 0) {
-      const sortedStatements = [...statements].sort((a, b) => {
-        const timeA = new Date(a.timestamp || a.stored || 0).getTime();
-        const timeB = new Date(b.timestamp || b.stored || 0).getTime();
-        return timeA - timeB;
-      });
-      
-      if (sortedStatements.length > 1) {
-        // Calculate active time by summing intervals between consecutive statements
-        // Exclude gaps larger than 5 minutes (300 seconds) - user likely left and came back
-        const MAX_GAP_SECONDS = 300; // 5 minutes
-        let totalActiveTime = 0;
-        
-        for (let i = 0; i < sortedStatements.length - 1; i++) {
-          const currentTime = new Date(sortedStatements[i].timestamp || sortedStatements[i].stored).getTime();
-          const nextTime = new Date(sortedStatements[i + 1].timestamp || sortedStatements[i + 1].stored).getTime();
-          
-          if (!isNaN(currentTime) && !isNaN(nextTime) && currentTime > 0 && nextTime > 0) {
-            const gapSeconds = Math.floor((nextTime - currentTime) / 1000);
-            
-            // Only count gaps that are reasonable (user is actively engaged)
-            // If gap is too large, user likely left and came back - don't count that time
-            if (gapSeconds > 0 && gapSeconds <= MAX_GAP_SECONDS) {
-              totalActiveTime += gapSeconds;
-            } else if (gapSeconds > MAX_GAP_SECONDS) {
-              // Large gap detected - user left and came back, don't count this gap
-              console.log(`[Progress Storage] Large gap detected: ${gapSeconds}s (${Math.floor(gapSeconds / 60)}m) - excluding from time spent`);
-            }
-          }
-        }
-        
-        // If we have active time, use it; otherwise fall back to a minimal estimate
-        if (totalActiveTime > 0) {
-          timeSpent = totalActiveTime;
-          console.log(`[Progress Storage] Calculated active time spent: ${timeSpent} seconds (${Math.floor(timeSpent / 60)} minutes ${timeSpent % 60} seconds) from ${sortedStatements.length} statements`);
-        } else {
-          // No active time calculated - estimate based on statement count (at least 1 second per statement)
-          timeSpent = Math.max(1, sortedStatements.length);
-          console.log(`[Progress Storage] No active time calculated, estimating: ${timeSpent} seconds from ${sortedStatements.length} statements`);
-        }
-      } else if (sortedStatements.length === 1) {
-        // Single statement - estimate minimal time (at least 1 second)
-        timeSpent = 1;
-        console.log(`[Progress Storage] Single statement found, setting minimal time: ${timeSpent} second`);
-      }
-    }
+    // Calculate time spent
+    const timeSpent = calculateTimeSpent(statements);
     
-    // Calculate progress percentage based on completion status
+    // Calculate progress percentage
     let progressPercent = 0;
     if (completionStatus === 'completed' || completionStatus === 'passed') {
       progressPercent = 100;
     } else if (completionStatus === 'in_progress') {
-      // Estimate progress based on number of statements (rough estimate)
-      // This is a simple heuristic - could be improved with more sophisticated tracking
-      const statementCount = statements.length;
-      if (statementCount > 0) {
-        // Assume course has ~50-100 statements for completion
-        // This is a rough estimate - adjust based on your course structure
-        progressPercent = Math.min(95, Math.round((statementCount / 80) * 100));
-      }
+      progressPercent = Math.min(95, Math.round((statements.length / DEFAULT_STATEMENTS_PER_COURSE) * 100));
     }
     
     return {
       completionStatus,
       score,
       timeSpent,
-      progressPercent, // Add progress percentage
+      progressPercent,
       startedAt,
-      completedAt
+      completedAt,
+      completionStatementId,
+      completionVerb,
+      success
     };
   } catch (error) {
-    console.error('[Progress Storage] Error calculating progress from statements:', error);
+    logger.error({ userId, courseId, error: error.message }, 'Error calculating progress');
     return null;
   }
 }
@@ -451,62 +477,90 @@ export async function calculateProgressFromStatements(userId, courseId, activity
 /**
  * Sync progress from xAPI statements
  */
-export async function syncProgressFromStatements(userId, courseId, activityId) {
-  console.log(`[Progress Storage] Syncing progress for ${userId} / ${courseId} / ${activityId}`);
-  const calculated = await calculateProgressFromStatements(userId, courseId, activityId);
+export async function syncProgressFromStatements(userId, courseId, activityId, registration = null) {
+  logger.debug({ userId, courseId, activityId, registration }, 'Syncing progress');
+  
+  const calculated = await calculateProgressFromStatements(userId, courseId, activityId, registration);
   
   if (calculated) {
-    console.log(`[Progress Storage] Calculated progress:`, {
-      completionStatus: calculated.completionStatus,
+    logger.debug({ 
+      userId, 
+      courseId, 
+      status: calculated.completionStatus, 
       score: calculated.score,
       timeSpent: calculated.timeSpent,
-      progressPercent: calculated.progressPercent
-    });
+      progressPercent: calculated.progressPercent 
+    }, 'Calculated progress');
+    
     const updated = await updateProgress(userId, courseId, calculated);
-    console.log(`[Progress Storage] Updated progress:`, {
-      completionStatus: updated.completionStatus,
-      score: updated.score,
-      timeSpent: updated.timeSpent,
+    
+    logger.debug({
+      userId,
+      courseId,
+      status: updated.completionStatus,
       attempts: updated.attempts
-    });
-    return updated;
-  } else {
-    console.log(`[Progress Storage] No progress calculated (no statements found)`);
+    }, 'Updated progress');
+    
+    return { updatedProgress: updated, calculated };
   }
   
+  logger.debug({ userId, courseId }, 'No progress calculated (no statements found)');
   return null;
 }
 
+// Max records per page for getAllProgress
+const MAX_PROGRESS_PAGE_SIZE = parseInt(process.env.MAX_PROGRESS_PAGE_SIZE || '1000', 10);
+
 /**
- * Get all progress (for admin)
+ * Get all progress (for admin) - with pagination to prevent OOM
+ * @param {Object} options - { limit, continuationToken }
+ * @returns {{ data: Array, continuationToken: string|null }}
  */
-export async function getAllProgress() {
+export async function getAllProgress(options = {}) {
   const client = getTableClient('USER_PROGRESS');
   const progressList = [];
+  const limit = Math.min(options.limit || MAX_PROGRESS_PAGE_SIZE, MAX_PROGRESS_PAGE_SIZE);
   
   try {
-    for await (const entity of client.listEntities()) {
-      progressList.push({
-        userId: entity.partitionKey,
-        courseId: entity.rowKey,
-        enrollmentStatus: entity.enrollmentStatus || 'not_enrolled',
-        completionStatus: entity.completionStatus || 'not_started',
-        score: entity.score !== undefined ? entity.score : null,
-        progressPercent: entity.progressPercent !== undefined ? entity.progressPercent : null,
-        timeSpent: entity.timeSpent || 0,
-        attempts: entity.attempts || 0,
-        enrolledAt: entity.enrolledAt || null,
-        startedAt: entity.startedAt || null,
-        completedAt: entity.completedAt || null,
-        lastAccessedAt: entity.lastAccessedAt || null,
-        updatedAt: entity.updatedAt || null
-      });
+    const listEntities = client.listEntities();
+    const pageIterator = listEntities.byPage({
+      maxPageSize: limit,
+      continuationToken: options.continuationToken || undefined
+    });
+    
+    const page = await pageIterator.next();
+    
+    if (!page.done && page.value) {
+      for (const entity of page.value) {
+        progressList.push({
+          userId: entity.partitionKey,
+          courseId: entity.rowKey,
+          enrollmentStatus: entity.enrollmentStatus || 'not_enrolled',
+          completionStatus: entity.completionStatus || 'not_started',
+          score: entity.score !== undefined ? entity.score : null,
+          progressPercent: entity.progressPercent !== undefined ? entity.progressPercent : null,
+          timeSpent: entity.timeSpent || 0,
+          attempts: entity.attempts || 0,
+          enrolledAt: entity.enrolledAt || null,
+          startedAt: entity.startedAt || null,
+          completedAt: entity.completedAt || null,
+          lastAccessedAt: entity.lastAccessedAt || null,
+          updatedAt: entity.updatedAt || null
+        });
+      }
+      
+      const nextToken = page.value.continuationToken || null;
+      
+      return {
+        data: progressList,
+        continuationToken: nextToken,
+        hasMore: !!nextToken
+      };
     }
   } catch (error) {
-    console.error('[Progress Storage] Error getting all progress:', error);
-    return [];
+    logger.error({ error: error.message }, 'Error getting all progress');
+    return { data: [], continuationToken: null, hasMore: false };
   }
   
-  return progressList;
+  return { data: progressList, continuationToken: null, hasMore: false };
 }
-

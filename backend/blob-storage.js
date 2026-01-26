@@ -8,6 +8,7 @@ import './crypto-polyfill.js';
 
 import { BlobServiceClient, StorageSharedKeyCredential } from '@azure/storage-blob';
 import dotenv from 'dotenv';
+import { blobLogger as logger } from './logger.js';
 
 dotenv.config();
 
@@ -17,6 +18,10 @@ const CONTAINER_NAME = process.env.AZURE_STORAGE_CONTAINER_NAME || 'lms-content'
 
 let blobServiceClient = null;
 let containerClient = null;
+
+// ============================================================================
+// Initialization
+// ============================================================================
 
 /**
  * Initialize Azure Blob Storage
@@ -32,34 +37,32 @@ export async function initializeBlobStorage() {
   blobServiceClient = new BlobServiceClient(accountUrl, sharedKeyCredential);
   containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
 
-  // Create container if it doesn't exist
   try {
-    await containerClient.createIfNotExists({
-      // No public access - files served through backend API (more secure)
-      // If you need public access, enable it in Azure Portal: Storage Account → Configuration → Allow Blob public access
-    });
-    console.log(`✓ Blob container '${CONTAINER_NAME}' ready`);
+    await containerClient.createIfNotExists({});
+    logger.info({ container: CONTAINER_NAME }, 'Blob container ready');
   } catch (error) {
-    // If container creation fails due to permissions, try to access existing container
     if (error.message.includes('Public access') || error.message.includes('not permitted')) {
-      console.log(`⚠️  Container creation skipped (public access not allowed, using private access)`);
-      // Verify container exists by trying to list blobs
+      logger.warn({ container: CONTAINER_NAME }, 'Container creation skipped (public access not allowed)');
       try {
         await containerClient.listBlobsFlat().next();
-        console.log(`✓ Blob container '${CONTAINER_NAME}' accessible`);
+        logger.info({ container: CONTAINER_NAME }, 'Blob container accessible');
       } catch (listError) {
-        console.error(`✗ Cannot access blob container '${CONTAINER_NAME}':`, listError.message);
-        throw new Error(`Container '${CONTAINER_NAME}' does not exist. Create it in Azure Portal or enable public access.`);
+        logger.error({ container: CONTAINER_NAME, error: listError.message }, 'Cannot access blob container');
+        throw new Error(`Container '${CONTAINER_NAME}' does not exist or is not accessible`);
       }
     } else {
-      console.error(`✗ Failed to create blob container '${CONTAINER_NAME}':`, error.message);
+      logger.error({ container: CONTAINER_NAME, error: error.message }, 'Failed to create blob container');
       throw error;
     }
   }
 
-  console.log('✓ Azure Blob Storage initialized');
+  logger.info('Azure Blob Storage initialized');
   return true;
 }
+
+// ============================================================================
+// Container/Blob Access
+// ============================================================================
 
 /**
  * Get container client
@@ -79,6 +82,10 @@ export function getBlobClient(blobPath) {
   return container.getBlobClient(blobPath);
 }
 
+// ============================================================================
+// Blob Operations
+// ============================================================================
+
 /**
  * Check if blob exists
  */
@@ -87,7 +94,7 @@ export async function blobExists(blobPath) {
     const blobClient = getBlobClient(blobPath);
     return await blobClient.exists();
   } catch (error) {
-    console.error(`[Blob Storage] Error checking blob existence: ${blobPath}`, error);
+    logger.error({ blobPath, error: error.message }, 'Error checking blob existence');
     return false;
   }
 }
@@ -138,19 +145,17 @@ export async function uploadBlob(blobPath, content, contentType = null) {
     options.blobHTTPHeaders = { blobContentType: contentType };
   }
 
-  // Azure Blob Storage v12+ - use BlockBlobClient for uploads
   if (Buffer.isBuffer(content)) {
     await blockBlobClient.upload(content, content.length, options);
   } else if (typeof content === 'string') {
-    // For strings, convert to buffer
     const buffer = Buffer.from(content, 'utf-8');
     await blockBlobClient.upload(buffer, buffer.length, options);
   } else {
-    // For streams or other types
     const length = content.length || content.byteLength || 0;
     await blockBlobClient.upload(content, length, options);
   }
-  console.log(`[Blob Storage] Uploaded: ${blobPath}`);
+  
+  logger.debug({ blobPath }, 'Blob uploaded');
 }
 
 /**
@@ -159,7 +164,7 @@ export async function uploadBlob(blobPath, content, contentType = null) {
 export async function deleteBlob(blobPath) {
   const blobClient = getBlobClient(blobPath);
   await blobClient.delete();
-  console.log(`[Blob Storage] Deleted: ${blobPath}`);
+  logger.debug({ blobPath }, 'Blob deleted');
 }
 
 /**
@@ -188,4 +193,3 @@ export function getBlobUrl(blobPath) {
   const blobClient = getBlobClient(blobPath);
   return blobClient.url;
 }
-

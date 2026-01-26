@@ -13,6 +13,7 @@ import AdminPanel from "./pages/AdminPanel";
 import AdminDashboard from "./pages/AdminDashboard";
 import CourseManagement from "./pages/CourseManagement";
 import LearnerManagement from "./pages/LearnerManagement";
+import UserManagement from "./pages/UserManagement";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { MainLayout } from "./components/layout/MainLayout";
 import { isAuthenticated } from "./services/auth";
@@ -32,11 +33,11 @@ const App = () => (
           <Routes>
             <Route
               path="/login"
-              element={isAuthenticated() ? <Navigate to="/courses" replace /> : <Login />}
+              element={isAuthenticated() ? <Navigate to="/dashboard" replace /> : <Login />}
             />
             <Route
               path="/register"
-              element={isAuthenticated() ? <Navigate to="/courses" replace /> : <Register />}
+              element={isAuthenticated() ? <Navigate to="/dashboard" replace /> : <Register />}
             />
             <Route
               path="/courses"
@@ -116,7 +117,17 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
-            <Route path="/" element={<Navigate to="/courses" replace />} />
+            <Route
+              path="/admin/users"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <MainLayout>
+                    <UserManagement />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           </BrowserRouter>

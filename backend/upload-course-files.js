@@ -60,6 +60,10 @@ async function uploadDirectory(dirPath, blobPrefix = '') {
           '.svg': 'image/svg+xml',
           '.mp3': 'audio/mpeg',
           '.mp4': 'video/mp4',
+          '.pdf': 'application/pdf',
+          '.vtt': 'text/vtt',
+          '.srt': 'text/srt',
+          '.webvtt': 'text/vtt',
           '.woff': 'font/woff',
           '.woff2': 'font/woff2',
           '.ttf': 'font/ttf'

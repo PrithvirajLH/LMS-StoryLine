@@ -1,18 +1,33 @@
 /**
  * Storyline LMS Backend Server
  * Serves course files and provides xAPI LRS endpoints
+ * 
+ * Security & Performance Improvements:
+ * - Rate limiting on auth and API endpoints
+ * - Request ID tracking for debugging
+ * - Centralized error handling
+ * - Input validation with Zod
+ * - OData injection protection
+ * - Proper logging with Pino
  */
+
+// CRITICAL: Load environment variables FIRST, before any imports that read process.env
+import dotenv from 'dotenv';
+dotenv.config();
 
 // Import crypto polyfill before any Azure SDK imports
 import './crypto-polyfill.js';
 
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { Readable } from 'stream';
+import { existsSync } from 'fs';
+import rateLimit from 'express-rate-limit';
+import { v4 as uuidv4 } from 'uuid';
 
 // Import services
 import * as xapiLRS from './xapi-lrs-azure.js';
@@ -21,11 +36,36 @@ import * as coursesStorage from './courses-storage.js';
 import * as blobStorage from './blob-storage.js';
 import * as progressStorage from './progress-storage.js';
 import * as usersStorage from './users-storage.js';
+import * as attemptsStorage from './attempts-storage.js';
+import * as moduleRulesStorage from './module-rules-storage.js';
 import { extractActivityIdFromXml } from './extract-activity-id.js';
 import { initializeTables } from './azure-tables.js';
 import * as verbTracker from './xapi-verb-tracker.js';
 
-dotenv.config();
+// Import utilities
+import logger, { serverLogger } from './logger.js';
+import { 
+  asyncHandler, 
+  errorHandler, 
+  notFoundHandler, 
+  sendXapiError,
+  AuthenticationError,
+  AuthorizationError,
+  NotFoundError,
+  ValidationError
+} from './errors.js';
+import {
+  validateBody,
+  registerSchema,
+  loginSchema,
+  createCourseSchema,
+  updateCourseSchema,
+  customVerbSchema,
+  moduleRulesSchema,
+  validate
+} from './validation.js';
+
+// dotenv.config() is called at the top of the file before imports
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,124 +73,664 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_PRODUCTION = NODE_ENV === 'production';
 
-// Helper function to get base URL from request (for deployment compatibility)
+// ============================================================================
+// Cookie & Security Configuration
+// ============================================================================
+
+const COOKIE_SECRET = process.env.COOKIE_SECRET || (IS_PRODUCTION ? null : 'dev-cookie-secret');
+if (IS_PRODUCTION && !COOKIE_SECRET) {
+  serverLogger.fatal('COOKIE_SECRET environment variable is required in production');
+  throw new Error('CRITICAL: COOKIE_SECRET must be set in production');
+}
+
+// Cookie settings for auth token
+const AUTH_COOKIE_NAME = 'lms_auth';
+const CSRF_COOKIE_NAME = 'lms_csrf';
+const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+
+// SameSite cookie policy:
+// - 'strict': Best security, but blocks cross-origin requests (same domain only)
+// - 'lax': Allows top-level navigation cross-origin (good for most cases)
+// - 'none': Required for cross-origin API calls (must use Secure)
+// Use COOKIE_SAMESITE env var for cross-origin deployments (e.g., different subdomains)
+// Normalize COOKIE_SAMESITE to lowercase (Express expects lowercase)
+const COOKIE_SAMESITE_RAW = process.env.COOKIE_SAMESITE || (IS_PRODUCTION ? 'lax' : 'lax');
+const COOKIE_SAMESITE = COOKIE_SAMESITE_RAW.toLowerCase();
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: IS_PRODUCTION || COOKIE_SAMESITE === 'none', // HTTPS required for SameSite=None
+  sameSite: COOKIE_SAMESITE,
+  maxAge: COOKIE_MAX_AGE,
+  path: '/'
+};
+
+// CORS allowed origins (configure for your domains in production)
+const CORS_ORIGINS = process.env.CORS_ORIGINS 
+  ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
+  : ['http://localhost:5173', 'http://localhost:3001', `http://localhost:${PORT}`];
+
+// ============================================================================
+// Rate Limiting Configuration
+// ============================================================================
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: { error: 'Too many authentication attempts, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 300, // limit each IP to 300 requests per minute
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const xapiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 500, // xAPI endpoints need higher limits for course interactions
+  message: { error: 'Too many xAPI requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ============================================================================
+// Request ID Middleware
+// ============================================================================
+
+app.use((req, res, next) => {
+  req.id = req.headers['x-request-id'] || uuidv4();
+  res.setHeader('x-request-id', req.id);
+  next();
+});
+
+// ============================================================================
+// Request Logging Middleware
+// ============================================================================
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const logData = {
+      requestId: req.id,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration: `${duration}ms`
+    };
+    
+    if (res.statusCode >= 400) {
+      serverLogger.warn(logData, 'Request completed with error');
+    } else if (duration > 1000) {
+      serverLogger.warn(logData, 'Slow request');
+    } else {
+      serverLogger.debug(logData, 'Request completed');
+    }
+  });
+  
+  next();
+});
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
 function getBaseUrl(req) {
-  // If BASE_URL env var is set and not localhost, use it
   if (process.env.BASE_URL && !process.env.BASE_URL.includes('localhost')) {
     return process.env.BASE_URL;
   }
-  // Check for proxy/load balancer headers (X-Forwarded-Proto, X-Forwarded-Host)
-  const protocol = req.get('x-forwarded-proto') || req.protocol || (req.secure ? 'https' : 'http');
-  const host = req.get('x-forwarded-host') || req.get('host') || `localhost:${PORT}`;
-  const baseUrl = `${protocol}://${host}`;
   
-  // Log for debugging in production
-  if (process.env.NODE_ENV === 'production' || process.env.DEBUG) {
-    console.log(`[Base URL] Generated base URL: ${baseUrl} (from protocol: ${protocol}, host: ${host})`);
+  const protocol = req.get('x-forwarded-proto') || req.protocol || (req.secure ? 'https' : 'http');
+  const origin = req.get('origin') || req.get('referer');
+  let host = null;
+  
+  if (origin) {
+    try {
+      const originUrl = new URL(origin);
+      host = `${originUrl.hostname}:${PORT}`;
+    } catch (e) {
+      // Fall through
+    }
   }
   
-  return baseUrl;
+  if (!host) host = req.get('x-forwarded-host');
+  if (!host) host = req.get('host') || `localhost:${PORT}`;
+  
+  if (host.includes('localhost') && process.env.NODE_ENV !== 'production') {
+    const forwardedFor = req.get('x-forwarded-for');
+    if (forwardedFor) {
+      const clientIp = forwardedFor.split(',')[0].trim().replace(/^::ffff:/, '');
+      if (clientIp && clientIp !== '127.0.0.1' && clientIp !== '::1') {
+        host = `${clientIp}:${PORT}`;
+      }
+    }
+  }
+  
+  return `${protocol}://${host}`;
 }
 
-// Middleware
+function verifyAuth(req) {
+  // Try each auth method and return first VALID token
+  // This allows fallback if cookie is stale but Authorization header is valid
+  
+  // 1. Try cookie first (most secure for browsers)
+  const cookieToken = req.cookies?.[AUTH_COOKIE_NAME];
+  if (cookieToken) {
+    const user = auth.verifyToken(cookieToken);
+    if (user) return user;
+    // Cookie invalid/expired, try next method
+  }
+  
+  // 2. Try Bearer token (API clients)
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    const bearerToken = authHeader.replace('Bearer ', '');
+    const user = auth.verifyToken(bearerToken);
+    if (user) return user;
+  }
+  
+  // 3. Try query param (legacy, least secure)
+  const queryToken = req.query.token;
+  if (queryToken) {
+    const user = auth.verifyToken(queryToken);
+    if (user) return user;
+  }
+  
+  return null;
+}
+
+// Generate CSRF token
+function generateCsrfToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+// CSRF validation middleware for state-changing requests
+function validateCsrf(req, res, next) {
+  // Skip CSRF for API clients using token-based auth (Basic or Bearer)
+  // These clients authenticate via Authorization header, not cookies
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Basic') || authHeader?.startsWith('Bearer')) {
+    return next();
+  }
+  
+  // Skip for GET/HEAD/OPTIONS (safe methods)
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return next();
+  }
+  
+  // In production, validate CSRF token for cookie-based browser sessions
+  if (IS_PRODUCTION) {
+    const csrfCookie = req.cookies?.[CSRF_COOKIE_NAME];
+    const csrfHeader = req.headers['x-csrf-token'];
+    
+    if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+      serverLogger.warn({ path: req.path }, 'CSRF validation failed');
+      return res.status(403).json({ error: 'Invalid CSRF token' });
+    }
+  }
+  
+  next();
+}
+
+function requireAuth(req) {
+  const user = verifyAuth(req);
+  if (!user) {
+    throw new AuthenticationError('Authentication required');
+  }
+  return user;
+}
+
+function requireAdmin(req) {
+  const user = requireAuth(req);
+  if (user.role !== 'admin') {
+    throw new AuthorizationError('Admin access required');
+  }
+  return user;
+}
+
+function decodeBasicAuthHeader(authHeader) {
+  const encoded = authHeader.replace(/^Basic\s+/i, '');
+  const decoded = Buffer.from(encoded, 'base64').toString('utf-8');
+  const separatorIndex = decoded.indexOf(':');
+  if (separatorIndex === -1) return null;
+  return {
+    email: decoded.slice(0, separatorIndex),
+    token: decoded.slice(separatorIndex + 1)
+  };
+}
+
+function getXapiAuth(req) {
+  const authHeader = req.headers.authorization || req.query.authorization || req.query.auth;
+  if (!authHeader || typeof authHeader !== 'string') return null;
+
+  if (authHeader.startsWith('Basic ')) {
+    const basic = decodeBasicAuthHeader(authHeader);
+    if (!basic?.token || !basic?.email) return null;
+    const user = auth.verifyToken(basic.token);
+    if (!user || user.email?.toLowerCase() !== basic.email.toLowerCase()) return null;
+    return { user, email: basic.email.toLowerCase() };
+  }
+
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.replace('Bearer ', '');
+    const user = auth.verifyToken(token);
+    if (!user || !user.email) return null;
+    return { user, email: user.email.toLowerCase() };
+  }
+
+  return null;
+}
+
+function requireXapiAuth(req) {
+  const authInfo = getXapiAuth(req);
+  if (!authInfo?.user || !authInfo?.email) {
+    throw new AuthenticationError('xAPI authentication required');
+  }
+  return authInfo;
+}
+
+function getAgentEmail(agent) {
+  if (!agent) return null;
+  const mbox = agent.mbox || '';
+  if (!mbox) return null;
+  return mbox.replace('mailto:', '').toLowerCase();
+}
+
+function assertActorMatches(user, actorEmail) {
+  if (!actorEmail) return;
+  if (user.role === 'admin') return;
+  if (user.email?.toLowerCase() !== actorEmail.toLowerCase()) {
+    throw new AuthorizationError('Actor does not match authenticated user');
+  }
+}
+
+// ============================================================================
+// Module Rules Cache
+// ============================================================================
+
+const moduleRulesCache = new Map();
+const MODULE_RULES_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getCachedModuleRules(courseId) {
+  const cached = moduleRulesCache.get(courseId);
+  if (cached && (Date.now() - cached.fetchedAt) < MODULE_RULES_CACHE_TTL_MS) {
+    return cached.rules;
+  }
+  const rules = await moduleRulesStorage.getModuleRules(courseId);
+  moduleRulesCache.set(courseId, { rules, fetchedAt: Date.now() });
+  return rules;
+}
+
+function setModuleRulesCache(courseId, rules) {
+  moduleRulesCache.set(courseId, { rules, fetchedAt: Date.now() });
+}
+
+// ============================================================================
+// Statement Progress Sync (Extracted Common Logic)
+// ============================================================================
+
+function extractBaseActivityId(activityId) {
+  if (!activityId) return null;
+  const slashIndex = activityId.indexOf('/');
+  return slashIndex > 0 ? activityId.substring(0, slashIndex) : activityId;
+}
+
+async function findCourseByActivityId(activityId) {
+  const allCourses = await coursesStorage.getAllCourses();
+  const baseActivityId = extractBaseActivityId(activityId);
+  
+  let course = allCourses.find(c => c.activityId === activityId);
+  if (course) return course;
+  
+  if (baseActivityId && baseActivityId !== activityId) {
+    course = allCourses.find(c => c.activityId === baseActivityId);
+    if (course) return course;
+  }
+  
+  course = allCourses.find(c => activityId.startsWith(c.activityId + '/') || activityId === c.activityId);
+  return course || null;
+}
+
+function getStatementScorePercent(statement) {
+  const score = statement?.result?.score;
+  if (!score) return null;
+  if (typeof score.scaled === 'number') return Math.round(score.scaled * 100);
+  if (typeof score.raw === 'number' && typeof score.max === 'number' && score.max > 0) {
+    return Math.round((score.raw / score.max) * 100);
+  }
+  if (typeof score.raw === 'number') return score.raw;
+  return null;
+}
+
+function statementMatchesRule(statement, rule) {
+  const objectId = statement?.object?.id || '';
+  const matchValue = rule?.matchValue || '';
+  if (!objectId || !matchValue) return false;
+  if ((rule.matchType || 'prefix') === 'contains') {
+    return objectId.includes(matchValue);
+  }
+  return objectId.startsWith(matchValue);
+}
+
+async function updateAttemptModuleProgress(userEmail, registrationId, course, statement) {
+  if (!registrationId || !userEmail || !course) return;
+  const rules = await getCachedModuleRules(course.courseId);
+  if (!rules || rules.length === 0) return;
+
+  const verbId = statement?.verb?.id || '';
+  if (!verbId) return;
+
+  const scorePercent = getStatementScorePercent(statement);
+  const completedAt = statement?.timestamp || statement?.stored || new Date().toISOString();
+
+  const attempt = await attemptsStorage.getAttempt(userEmail, registrationId);
+  const moduleProgress = attempt?.moduleProgress || {};
+
+  let updated = false;
+  rules.forEach(rule => {
+    if (!rule || !rule.moduleId) return;
+    if (!statementMatchesRule(statement, rule)) return;
+    const completionVerbs = Array.isArray(rule.completionVerbs) ? rule.completionVerbs : [];
+    if (completionVerbs.length > 0 && !completionVerbs.includes(verbId)) return;
+    if (typeof rule.scoreThreshold === 'number' && scorePercent !== null) {
+      if (scorePercent < rule.scoreThreshold) return;
+    } else if (typeof rule.scoreThreshold === 'number' && scorePercent === null) {
+      return;
+    }
+
+    moduleProgress[rule.moduleId] = {
+      status: 'completed',
+      completedAt,
+      verbId,
+      scorePercent
+    };
+    updated = true;
+  });
+
+  if (updated) {
+    await attemptsStorage.upsertAttemptProgress(userEmail, registrationId, {
+      courseId: course.courseId,
+      activityId: course.activityId,
+      moduleProgress
+    });
+  }
+}
+
+/**
+ * Process statement and sync progress (extracted common logic)
+ * Used by both POST and PUT /xapi/statements
+ */
+async function processStatementProgressSync(statement) {
+  if (!statement?.actor || !statement?.object) return;
+  
+  const userEmail = statement.actor.mbox ? statement.actor.mbox.replace('mailto:', '') : null;
+  const activityId = statement.object.id;
+  
+  if (!userEmail || !activityId) return;
+  
+  const course = await findCourseByActivityId(activityId);
+  if (!course) return;
+  
+  const baseActivityId = course.activityId;
+  const registrationId = statement?.context?.registration || null;
+  
+  // Update module progress
+  await updateAttemptModuleProgress(userEmail, registrationId, course, statement).catch(err => {
+    serverLogger.error({ error: err.message }, 'Error updating module progress');
+  });
+  
+  // Sync progress in background
+  progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId, registrationId)
+    .then(async (syncResult) => {
+      if (syncResult?.updatedProgress) {
+        const { calculated } = syncResult;
+        if (registrationId && calculated) {
+          const eligibleForRaise = (calculated.completionStatus === 'passed' || calculated.completionStatus === 'completed') &&
+            calculated.success !== false;
+          try {
+            await attemptsStorage.upsertAttemptProgress(userEmail, registrationId, {
+              courseId: course.courseId,
+              activityId: baseActivityId,
+              completionStatus: calculated.completionStatus,
+              completionVerb: calculated.completionVerb,
+              completionStatementId: calculated.completionStatementId,
+              success: calculated.success,
+              score: calculated.score,
+              progressPercent: calculated.progressPercent,
+              timeSpent: calculated.timeSpent,
+              completedAt: calculated.completedAt,
+              eligibleForRaise
+            });
+          } catch (attemptError) {
+            serverLogger.error({ error: attemptError.message }, 'Error updating attempt');
+          }
+        }
+      }
+    })
+    .catch(err => {
+      serverLogger.error({ error: err.message }, 'Auto-sync error');
+    });
+}
+
+// ============================================================================
+// Middleware Setup
+// ============================================================================
+
+// HTTPS enforcement in production
+if (IS_PRODUCTION) {
+  app.use((req, res, next) => {
+    // Trust proxy headers (Azure, nginx, etc.)
+    if (req.headers['x-forwarded-proto'] !== 'https' && req.hostname !== 'localhost') {
+      return res.redirect(301, `https://${req.hostname}${req.url}`);
+    }
+    next();
+  });
+}
+
+// Cookie parser (must be before CORS for credentials)
+app.use(cookieParser(COOKIE_SECRET));
+
+// CORS configuration
 app.use(cors({
-  origin: true, // Allow all origins for course content
+  origin: IS_PRODUCTION 
+    ? (origin, callback) => {
+        // Allow requests with no origin (mobile apps, curl, etc.)
+        if (!origin) return callback(null, true);
+        if (CORS_ORIGINS.includes(origin)) {
+          callback(null, true);
+        } else {
+          serverLogger.warn({ origin }, 'Blocked by CORS');
+          callback(new Error('Not allowed by CORS'));
+        }
+      }
+    : true, // Allow all origins in development
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Experience-API-Version']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Experience-API-Version', 'X-Request-ID', 'X-CSRF-Token', 'x-retry-count']
 }));
 
-// IMPORTANT: Handle raw body for xAPI state PUT BEFORE express.json()
-// Storyline sends state as application/octet-stream (binary), NOT JSON
-// Storyline uses a proprietary encoded format, so we save it as-is (string)
+// Handle raw body for xAPI state PUT BEFORE express.json()
 app.put('/xapi/activities/state', express.raw({ type: ['application/octet-stream', 'application/json', '*/*'], limit: '10mb' }), (req, res, next) => {
-  // Convert buffer to string - Storyline expects the exact same format back
   if (Buffer.isBuffer(req.body)) {
     req.body = req.body.toString('utf8');
-    console.log(`[xAPI State Middleware] Converted buffer to string (${req.body.length} chars), Preview: ${req.body.substring(0, 100)}`);
   } else if (typeof req.body === 'object' && req.body !== null) {
-    // If it's already an object, try to stringify it (for JSON content-type)
     try {
       req.body = JSON.stringify(req.body);
-      console.log(`[xAPI State Middleware] Stringified object to JSON string`);
     } catch (e) {
-      console.warn(`[xAPI State Middleware] Could not stringify object: ${e.message}`);
       req.body = String(req.body);
     }
   }
-  // Keep as string - Storyline's format is not JSON, it's a proprietary encoding
   next();
 });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Log xAPI state requests for debugging
-app.use('/xapi/activities/state', (req, res, next) => {
-  if (req.method === 'GET') {
-    console.log(`[xAPI State] GET - stateId: ${req.query.stateId}, hasAgent: ${!!req.query.agent}, activityId: ${req.query.activityId?.substring(0, 50) || 'missing'}...`);
+// Apply CSRF validation to all API state-changing routes (POST, PUT, DELETE)
+// Excludes: auth routes (login/register need to work without CSRF), xAPI routes (Basic auth)
+app.use('/api', (req, res, next) => {
+  // Skip CSRF for auth routes (login, register need to work without prior CSRF token)
+  if (req.path.startsWith('/auth/login') || req.path.startsWith('/auth/register') || req.path.startsWith('/auth/csrf')) {
+    return next();
   }
-  next();
+  validateCsrf(req, res, next);
 });
 
-// Handle preflight requests
 app.options('*', (req, res) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  const origin = req.headers.origin;
+  
+  // Enforce CORS allowlist consistently with cors() middleware
+  if (IS_PRODUCTION) {
+    if (!origin || !CORS_ORIGINS.includes(origin)) {
+      serverLogger.warn({ origin }, 'Preflight blocked by CORS');
+      return res.sendStatus(403);
+    }
+    res.header('Access-Control-Allow-Origin', origin);
+  } else {
+    // Development: allow all origins, but MUST use origin (not *) when credentials: true
+    // Browsers reject Access-Control-Allow-Origin: * with credentials: true
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+    } else {
+      // No origin header - likely same-origin or non-browser client
+      // Can't use * with credentials, so reflect localhost
+      res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
+    }
+  }
+  
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Experience-API-Version');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Experience-API-Version, X-Request-ID, X-CSRF-Token, x-retry-count');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.sendStatus(200);
 });
 
-// Health check
+// ============================================================================
+// Health Check
+// ============================================================================
+
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), requestId: req.id });
 });
 
-// Serve launch page
-app.get('/', (req, res) => {
+// Legacy launch page (for direct xAPI course launching)
+// Access via /launch instead of root
+app.get('/launch', (req, res) => {
   res.sendFile(path.join(__dirname, 'launch.html'));
 });
+
+// ============================================================================
+// Authentication Routes (with rate limiting)
+// ============================================================================
+
+app.post('/api/auth/register', authLimiter, validateBody(registerSchema), asyncHandler(async (req, res) => {
+  const { email, password, firstName, lastName, name } = req.body;
+  const fullName = (firstName && lastName) 
+    ? `${firstName.trim()} ${lastName.trim()}`.trim()
+    : (name || email.split('@')[0]);
+  const result = await auth.register(email, password, fullName, firstName, lastName);
+  
+  // Set httpOnly cookie with auth token
+  res.cookie(AUTH_COOKIE_NAME, result.token, cookieOptions);
+  
+  // Set CSRF token (readable by JavaScript for inclusion in headers)
+  const csrfToken = generateCsrfToken();
+  res.cookie(CSRF_COOKIE_NAME, csrfToken, { 
+    ...cookieOptions, 
+    httpOnly: false // CSRF token must be readable by JS
+  });
+  
+  // Return user data and CSRF token (auth token is in httpOnly cookie only)
+  res.json({ 
+    user: result.user, 
+    csrfToken
+    // NOTE: Token intentionally NOT included - use httpOnly cookie for security
+  });
+}));
+
+app.post('/api/auth/login', authLimiter, validateBody(loginSchema), asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+  const result = await auth.login(email, password);
+  
+  // Set httpOnly cookie with auth token
+  res.cookie(AUTH_COOKIE_NAME, result.token, cookieOptions);
+  
+  // Set CSRF token (readable by JavaScript for inclusion in headers)
+  const csrfToken = generateCsrfToken();
+  res.cookie(CSRF_COOKIE_NAME, csrfToken, { 
+    ...cookieOptions, 
+    httpOnly: false // CSRF token must be readable by JS
+  });
+  
+  // Return user data and CSRF token (auth token is in httpOnly cookie only)
+  res.json({ 
+    user: result.user, 
+    csrfToken
+    // NOTE: Token intentionally NOT included - use httpOnly cookie for security
+  });
+}));
+
+app.post('/api/auth/logout', asyncHandler(async (req, res) => {
+  // Clear auth cookies
+  res.clearCookie(AUTH_COOKIE_NAME, { path: '/' });
+  res.clearCookie(CSRF_COOKIE_NAME, { path: '/' });
+  
+  serverLogger.info('User logged out');
+  res.json({ success: true, message: 'Logged out successfully' });
+}));
+
+app.get('/api/auth/me', asyncHandler(async (req, res) => {
+  const user = requireAuth(req);
+  res.json({ 
+    user: {
+      ...user,
+      userId: user.userId || user.id,
+      isAdmin: user.role === 'admin',
+      firstName: user.name?.split(' ')[0] || user.name,
+      lastName: user.name?.split(' ').slice(1).join(' ') || ''
+    }
+  });
+}));
+
+// CSRF token refresh endpoint
+app.get('/api/auth/csrf', asyncHandler(async (req, res) => {
+  const csrfToken = generateCsrfToken();
+  res.cookie(CSRF_COOKIE_NAME, csrfToken, { 
+    ...cookieOptions, 
+    httpOnly: false 
+  });
+  res.json({ csrfToken });
+}));
 
 // ============================================================================
 // Courses API Routes
 // ============================================================================
 
-// Courses are now stored in Azure Table Storage via courses-storage.js
-
-// Helper to verify token and get user
-function verifyAuth(req) {
-  const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
-  if (!token) {
-    return null;
-  }
-  return auth.verifyToken(token);
-}
-
-// GET /api/courses - Get all courses (with enrollment status for authenticated users)
-app.get('/api/courses', async (req, res) => {
-  try {
+app.get('/api/courses', apiLimiter, asyncHandler(async (req, res) => {
     const user = verifyAuth(req);
     const courses = await coursesStorage.getAllCourses();
     
-    // Get user's progress if authenticated
     let userProgress = [];
-    if (user && user.email) {
+  if (user?.email) {
       try {
         userProgress = await progressStorage.getUserProgress(user.email);
-      } catch (progressError) {
-        console.error('[Courses] Error getting user progress:', progressError);
-        // Continue without progress data
+    } catch (err) {
+      serverLogger.error({ error: err.message }, 'Error getting user progress');
       }
     }
     
-    // Return courses with enrollment status if user is authenticated
     const coursesWithEnrollment = courses.map(course => {
       const progress = userProgress.find(p => p.courseId === course.courseId);
       const isEnrolled = progress && (progress.enrollmentStatus === 'enrolled' || progress.enrollmentStatus === 'in_progress');
       
-      // Calculate progress percent - ensure it's always a number
       let progressPercent = 0;
       if (progress) {
         if (progress.progressPercent !== undefined && progress.progressPercent !== null) {
@@ -168,30 +748,24 @@ app.get('/api/courses', async (req, res) => {
         description: course.description || '',
         thumbnailUrl: course.thumbnailUrl || '',
         isEnrolled: isEnrolled || false,
-        enrollmentStatus: progress?.enrollmentStatus || undefined,
-        completionStatus: progress?.completionStatus || undefined,
-        progressPercent: progressPercent,
+      enrollmentStatus: progress?.enrollmentStatus,
+      completionStatus: progress?.completionStatus,
+      progressPercent,
         score: progress?.score !== undefined && progress?.score !== null ? Number(progress.score) : undefined,
-        completedAt: progress?.completedAt || undefined,
+      completedAt: progress?.completedAt,
         activityId: course.activityId
       };
     });
 
     res.json(coursesWithEnrollment);
-  } catch (error) {
-    console.error('[Courses] Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// GET /api/courses/:courseId - Get specific course
-app.get('/api/courses/:courseId', async (req, res) => {
-  try {
+app.get('/api/courses/:courseId', apiLimiter, asyncHandler(async (req, res) => {
     const { courseId } = req.params;
     const course = await coursesStorage.getCourseById(courseId);
     
     if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    throw new NotFoundError('Course');
     }
 
     const user = verifyAuth(req);
@@ -201,114 +775,107 @@ app.get('/api/courses/:courseId', async (req, res) => {
       isEnrolled: user ? true : false,
       enrollmentStatus: user ? 'enrolled' : undefined
     });
-  } catch (error) {
-    console.error('[Courses] Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// POST /api/courses/:courseId/launch - Launch course (auto-enrolls and tracks progress)
-app.post('/api/courses/:courseId/launch', async (req, res) => {
-  try {
+app.post('/api/courses/:courseId/launch', apiLimiter, asyncHandler(async (req, res) => {
     const { courseId } = req.params;
-    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token || req.body.token;
-    
-    if (!token) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+  const user = requireAuth(req);
 
-    // Verify token
-    const user = auth.verifyToken(token);
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    // Find course
     const course = await coursesStorage.getCourseById(courseId);
     if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    throw new NotFoundError('Course');
     }
 
-    // Update progress - enroll and mark as started
-    // Use email as PartitionKey for consistency (better than numeric userId)
     const userEmail = user.email;
+  let currentProgress = null;
+  
     if (userEmail) {
       try {
-        // Get existing progress to increment attempts correctly
         const existingProgressList = await progressStorage.getUserProgress(userEmail);
-        const currentProgress = existingProgressList.find(p => p.courseId === courseId);
+        currentProgress = existingProgressList.find(p => p.courseId === courseId);
         const currentAttempts = currentProgress?.attempts || 0;
         
-        await progressStorage.updateProgress(userEmail, courseId, {
+        progressStorage.updateProgress(userEmail, courseId, {
           enrollmentStatus: 'enrolled',
           completionStatus: 'in_progress',
-          attempts: currentAttempts + 1 // Increment attempts on launch
-        });
-        console.log(`[Progress] ✅ Updated progress on launch: attempts=${currentAttempts + 1}`);
-      } catch (progressError) {
-        console.error('[Progress] Error updating progress on launch:', progressError);
-        // Continue with launch even if progress update fails
-      }
-    } else {
-      console.warn('[Progress] Cannot update progress: user email not found', user);
+        attempts: currentAttempts + 1
+      }).catch(err => {
+        serverLogger.error({ error: err.message }, 'Error updating progress on launch');
+      });
+    } catch (err) {
+      serverLogger.error({ error: err.message }, 'Error getting progress on launch');
+    }
+  }
+
+  // Reuse open attempt or create new registration
+    let registrationId;
+    let reusedAttempt = false;
+    try {
+      const openAttempt = await attemptsStorage.getLatestOpenAttempt(user.email, course.courseId);
+      registrationId = openAttempt?.registrationId || null;
+      reusedAttempt = !!openAttempt;
+  } catch (err) {
+    serverLogger.error({ error: err.message }, 'Error checking open attempts');
+    }
+  
+    if (!registrationId) {
+      registrationId = `reg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     }
 
-    // Generate registration ID
-    const registrationId = `reg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    // Create actor
     const actor = {
       objectType: 'Agent',
       name: user.name || user.email,
       mbox: `mailto:${user.email}`
     };
 
-    // Get base URL from request (supports network access on deployed servers)
     const requestBaseUrl = getBaseUrl(req);
-    
-    // xAPI endpoint
     const endpoint = `${requestBaseUrl}/xapi`;
+  // Get JWT token: prioritize cookie (httpOnly), then fallback to header/query for API clients
+  const token = req.cookies?.[AUTH_COOKIE_NAME] 
+    || req.headers.authorization?.replace('Bearer ', '') 
+    || req.query.token 
+    || req.body.token;
     const authString = Buffer.from(`${user.email}:${token}`).toString('base64');
 
-    // Build launch URL with xAPI parameters
     const params = new URLSearchParams({
-      endpoint: endpoint,
+    endpoint,
       auth: `Basic ${authString}`,
       actor: JSON.stringify(actor),
       registration: registrationId,
       activityId: course.activityId
     });
 
-    // Build launch URL - include coursePath if it exists and is not empty
-    const filePath = course.coursePath && course.coursePath.trim() 
-      ? `${course.coursePath}/${course.launchFile}`.replace(/\/+/g, '/') // Normalize slashes
+  const filePath = course.coursePath?.trim() 
+    ? `${course.coursePath}/${course.launchFile}`.replace(/\/+/g, '/')
       : course.launchFile;
     const launchUrl = `${requestBaseUrl}/course/${filePath}?${params.toString()}`;
     
-    // Log launch URL for debugging (sanitize token from logs)
-    console.log(`[Course Launch] Course: ${course.title}, Launch URL: ${requestBaseUrl}/course/${filePath}?endpoint=${encodeURIComponent(endpoint)}&...`);
-    console.log(`[Course Launch] xAPI Endpoint: ${endpoint}`);
+    if (!reusedAttempt) {
+      try {
+        await attemptsStorage.createAttempt({
+          registrationId,
+          userEmail: user.email,
+          userName: user.name || user.email,
+          courseId: course.courseId,
+          activityId: course.activityId,
+          launchedAt: new Date().toISOString(),
+          completionStatus: 'in_progress'
+        });
+    } catch (err) {
+      serverLogger.error({ error: err.message }, 'Error creating attempt');
+      }
+    }
 
-    // Get current progress to include progressPercent
     let progressPercent = 0;
     let completionStatus = 'not_started';
-    if (userEmail) {
-      try {
-        const progressList = await progressStorage.getUserProgress(userEmail);
-        const currentProgress = progressList.find(p => p.courseId === courseId);
-        if (currentProgress) {
-          completionStatus = currentProgress.completionStatus || 'not_started';
-          // Use progressPercent from database if available, otherwise calculate
-          if (currentProgress.progressPercent !== undefined) {
-            progressPercent = currentProgress.progressPercent;
-          } else if (completionStatus === 'completed' || completionStatus === 'passed') {
-            progressPercent = 100;
-          } else if (completionStatus === 'in_progress') {
-            progressPercent = currentProgress.score || 0;
-          }
-        }
-      } catch (progressError) {
-        console.error('[Progress] Error getting progress for launch:', progressError);
+    if (currentProgress) {
+      completionStatus = currentProgress.completionStatus || 'not_started';
+      if (currentProgress.progressPercent !== undefined && currentProgress.progressPercent !== null) {
+        progressPercent = Math.max(0, Math.min(100, Number(currentProgress.progressPercent)));
+      } else if (completionStatus === 'completed' || completionStatus === 'passed') {
+        progressPercent = 100;
+      } else if (completionStatus === 'in_progress') {
+        progressPercent = currentProgress.score ? Math.max(0, Math.min(100, Number(currentProgress.score))) : 0;
       }
     }
 
@@ -321,180 +888,47 @@ app.post('/api/courses/:courseId/launch', async (req, res) => {
         activityId: course.activityId,
         isEnrolled: true,
         enrollmentStatus: 'enrolled',
-        completionStatus: completionStatus,
-        progressPercent: progressPercent
-      },
-      launchUrl: launchUrl,
-      registrationId: registrationId
-    });
-  } catch (error) {
-    console.error('[Courses] Launch error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============================================================================
-// Authentication Routes
-// ============================================================================
-
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { email, password, firstName, lastName, name } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
-    }
-    // Combine firstName and lastName if provided, otherwise use name
-    const fullName = (firstName && lastName) 
-      ? `${firstName.trim()} ${lastName.trim()}`.trim()
-      : (name || email.split('@')[0]);
-    const result = await auth.register(email, password, fullName, firstName, lastName);
-    res.json(result);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
-    }
-    const result = await auth.login(email, password);
-    res.json(result);
-  } catch (error) {
-    res.status(401).json({ error: error.message });
-  }
-});
-
-app.get('/api/auth/me', (req, res) => {
-  const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
-  if (!token) {
-    return res.status(401).json({ error: 'No token provided' });
-  }
-  const user = auth.verifyToken(token);
-  if (!user) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-  // Transform user to include isAdmin for frontend compatibility
-  res.json({ 
-    user: {
-      ...user,
-      userId: user.userId || user.id,
-      isAdmin: user.role === 'admin',
-      firstName: user.name?.split(' ')[0] || user.name,
-      lastName: user.name?.split(' ').slice(1).join(' ') || ''
-    }
+      completionStatus,
+      progressPercent
+    },
+    launchUrl,
+    registrationId
   });
-});
-
-// ============================================================================
-// Course Launch Route
-// ============================================================================
-
-app.get('/launch', async (req, res) => {
-  try {
-    // Get token from query or header
-    const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
-    
-    if (!token) {
-      return res.status(401).json({ error: 'Authentication required. Add ?token=YOUR_TOKEN to the URL' });
-    }
-
-    // Verify token
-    const user = auth.verifyToken(token);
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    // Generate registration ID for this attempt
-    const registrationId = req.query.registration || `reg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    // Create actor object for xAPI
-    const actor = {
-      objectType: 'Agent',
-      name: user.name || user.email,
-      mbox: `mailto:${user.email}`
-    };
-
-    // Activity ID from tincan.xml
-    const activityId = 'urn:articulate:storyline:5Ujw93Dh98n';
-
-    // Get base URL from request (supports network access on deployed servers)
-    const requestBaseUrl = getBaseUrl(req);
-    
-    // xAPI endpoint
-    const endpoint = `${requestBaseUrl}/xapi`;
-
-    // Create auth string (Basic auth with token)
-    const authString = Buffer.from(`${user.email}:${token}`).toString('base64');
-
-    // Build launch URL with xAPI parameters
-    // Storyline's scormdriver.js reads these from URL query parameters
-    const params = new URLSearchParams({
-      endpoint: endpoint,
-      auth: `Basic ${authString}`,
-      actor: JSON.stringify(actor),
-      registration: registrationId,
-      activityId: activityId
-    });
-
-    // Redirect to course with xAPI parameters
-    const courseUrl = `/course/index_lms.html?${params.toString()}`;
-    res.redirect(courseUrl);
-  } catch (error) {
-    console.error('[Launch] Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
 // ============================================================================
 // Course File Serving from Azure Blob Storage
 // ============================================================================
 
-// Serve course files from Azure Blob Storage
-app.get('/course/*', async (req, res, next) => {
-  try {
-    // Get file path (everything after /course/)
-    // Express wildcard routes: req.params[0] or use req.path
-    // Note: req.path is URL-decoded by Express, but req.url/req.originalUrl are not
-    // Use req.path for the decoded path, but also check req.originalUrl if needed
-    const fullPath = req.path; // e.g., "/course/index_lms.html" (already URL-decoded by Express)
+app.get('/course/*', asyncHandler(async (req, res) => {
+  const fullPath = req.path;
     let filePath = fullPath.replace(/^\/course\//, '') || 'index_lms.html';
     
-    // Ensure proper URL decoding (Express should handle req.path, but be explicit for safety)
-    // Also try decoding in case there's any remaining encoding
+    if (filePath.endsWith('.map')) {
+      return res.status(404).send();
+    }
+    
     try {
-      // If filePath still contains % encoding, decode it
       if (filePath.includes('%')) {
         filePath = decodeURIComponent(filePath);
       }
     } catch (e) {
-      // If decoding fails, use as-is
-      console.log(`[Course File] URL decode warning: ${e.message}, using path as-is: ${filePath}`);
-    }
-    
-    // Fix duplicated path segments (e.g., "coursePath/coursePath/file" -> "coursePath/file")
-    // This can happen when course JavaScript constructs paths incorrectly
-    const originalFilePath = filePath;
-    const pathParts = filePath.split('/').filter(p => p !== ''); // Remove empty parts
+    // Use as-is
+  }
+  
+  // Deduplicate path segments
+  const pathParts = filePath.split('/').filter(p => p !== '');
     const deduplicatedParts = [];
     for (let i = 0; i < pathParts.length; i++) {
-      const part = pathParts[i];
-      // Skip if this part is the same as the previous part (consecutive duplicate)
-      if (i > 0 && pathParts[i - 1] === part) {
-        continue;
-      }
-      deduplicatedParts.push(part);
+    if (i > 0 && pathParts[i - 1] === pathParts[i]) continue;
+    deduplicatedParts.push(pathParts[i]);
     }
     filePath = deduplicatedParts.join('/');
     
-    // Security: prevent directory traversal
     if (filePath.includes('..') || path.isAbsolute(filePath)) {
       return res.status(400).json({ error: 'Invalid file path' });
     }
 
-    // Determine content type
     const ext = path.extname(filePath).toLowerCase();
     const contentTypes = {
       '.html': 'text/html; charset=utf-8',
@@ -510,639 +944,385 @@ app.get('/course/*', async (req, res, next) => {
       '.svg': 'image/svg+xml',
       '.mp3': 'audio/mpeg',
       '.mp4': 'video/mp4',
+      '.pdf': 'application/pdf',
+      '.vtt': 'text/vtt',
       '.woff': 'font/woff',
       '.woff2': 'font/woff2',
-      '.ttf': 'font/ttf',
-      '.eot': 'application/vnd.ms-fontobject'
+    '.ttf': 'font/ttf'
     };
 
     const contentType = contentTypes[ext] || 'application/octet-stream';
 
-    // Get blob stream from Azure with fallback to root level
     let stream;
-    let actualFilePath = filePath;
     try {
       stream = await blobStorage.getBlobStream(filePath);
     } catch (error) {
-      // If file not found and path contains '/', try multiple fallback strategies
       if (error.message.includes('not found') && filePath.includes('/')) {
         const fileName = path.basename(filePath);
+        if (fileName.endsWith('.map')) {
+          return res.status(404).send();
+        }
         
-        // Strategy 1: Try root level (just filename)
         try {
           stream = await blobStorage.getBlobStream(fileName);
-          actualFilePath = fileName;
-        } catch (fallbackError1) {
-          // Strategy 2: Try with duplicated path (in case file is stored with duplication in blob storage)
-          const pathParts = filePath.split('/').filter(p => p !== '');
-          let found = false;
-          if (pathParts.length > 0) {
-            const firstPart = pathParts[0];
-            const duplicatedPath = `${firstPart}/${firstPart}/${pathParts.slice(1).join('/')}`;
-            try {
-              stream = await blobStorage.getBlobStream(duplicatedPath);
-              actualFilePath = duplicatedPath;
-              found = true;
-            } catch (fallbackError2) {
-              // Strategy 3: Try with different file extension (.jpg vs .png, etc.)
-              const ext = path.extname(filePath);
-              const baseName = path.basename(filePath, ext);
-              const dirPath = path.dirname(filePath);
-              const altExtensions = ['.jpg', '.jpeg', '.png', '.gif'];
-              for (const altExt of altExtensions) {
-                if (altExt !== ext) {
-                  const altPath = dirPath === '.' ? `${baseName}${altExt}` : `${dirPath}/${baseName}${altExt}`;
-                  try {
-                    stream = await blobStorage.getBlobStream(altPath);
-                    actualFilePath = altPath;
-                    found = true;
-                    break;
-                  } catch (altError) {
-                    // Try duplicated path with alternative extension
-                    const duplicatedAltPath = `${firstPart}/${firstPart}/${pathParts.slice(1, -1).join('/')}/${baseName}${altExt}`.replace(/\/+/g, '/');
-                    try {
-                      stream = await blobStorage.getBlobStream(duplicatedAltPath);
-                      actualFilePath = duplicatedAltPath;
-                      found = true;
-                      break;
-                    } catch (dupAltError) {
-                      // Continue to next extension
-                    }
-                  }
-                }
-              }
-            }
-          }
-          if (!found) {
-            throw error; // Re-throw original error if all fallbacks fail
-          }
+      } catch (fallbackError) {
+        throw error;
         }
       } else {
-        throw error; // Re-throw if not a "not found" error or path doesn't contain '/'
+      throw error;
       }
     }
     
-    // Set headers
-    res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Type', contentType);
+  const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].includes(ext);
+  res.setHeader('Cache-Control', isImage ? 'public, max-age=300, must-revalidate' : 'public, max-age=3600');
+  
+  // Content Security Policy for HTML files (course content)
+  if (ext === '.html' || ext === '.htm') {
+    // Allow scripts from same origin and inline (required for Storyline)
+    // Allow styles from same origin and inline
+    // Allow images from same origin, data URIs, and blob URIs
+    // Allow fonts from same origin
+    // Allow frames from same origin
+    res.setHeader('Content-Security-Policy', [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'", // Storyline requires inline scripts
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "font-src 'self' data:",
+      "connect-src 'self' " + (process.env.CSP_CONNECT_SRC || '*'), // Allow xAPI connections
+      "frame-src 'self'",
+      "media-src 'self' blob:",
+      "object-src 'none'",
+      "base-uri 'self'"
+    ].join('; '));
     
-    // Different cache strategies for different file types
-    // Images: shorter cache (5 min) to allow updates, or use ETag for better invalidation
-    // Other files: longer cache (1 hour) for performance
-    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].includes(ext);
-    if (isImage) {
-      // For images, use shorter cache or allow revalidation
-      res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate'); // 5 minutes, must revalidate
-    } else {
-      // For other files, cache longer
-      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-    }
-    
-    // Pipe stream to response
-    stream.pipe(res);
+    // Prevent clickjacking
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+  }
+  
+  stream.pipe(res);
     
     stream.on('error', (error) => {
-      console.error(`[Blob Storage] Stream error for ${filePath}:`, error);
+    serverLogger.error({ filePath, error: error.message }, 'Stream error');
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to stream file' });
       }
     });
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      const requestedPath = req.path.replace(/^\/course\//, '') || 'index_lms.html';
-      console.error(`[Course File] ❌ File not found: ${requestedPath}`);
-      console.error(`[Course File] 💡 Tried paths: ${requestedPath} and ${path.basename(requestedPath)}`);
-      console.error(`[Course File] 💡 Make sure course files are uploaded to blob storage`);
-      return res.status(404).json({ 
-        error: 'File not found',
-        message: `Course file not found. Please ensure course files are uploaded to blob storage.`,
-        triedPaths: [requestedPath, path.basename(requestedPath)]
-      });
-    }
-    console.error(`[Blob Storage] Error serving file: ${req.params[0]}`, error);
-    if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
+}));
 
 // ============================================================================
-// xAPI LRS Endpoints
+// xAPI LRS Endpoints (with rate limiting)
 // ============================================================================
 
-// Helper function to extract base activity ID from statement activity ID
-// Storyline sends statements with extended IDs like "urn:articulate:storyline:5Ujw93Dh98n/6BnvowJ1urM"
-// We need to match against the base course activity ID "urn:articulate:storyline:5Ujw93Dh98n"
-function extractBaseActivityId(activityId) {
-  if (!activityId) return null;
-  // If activityId contains a '/', extract the base part (everything before the first '/')
-  const slashIndex = activityId.indexOf('/');
-  return slashIndex > 0 ? activityId.substring(0, slashIndex) : activityId;
-}
-
-// Helper function to find course by activity ID (handles extended IDs)
-async function findCourseByActivityId(activityId) {
-  const allCourses = await coursesStorage.getAllCourses();
-  const baseActivityId = extractBaseActivityId(activityId);
-  
-  // Try exact match first
-  let course = allCourses.find(c => c.activityId === activityId);
-  if (course) return course;
-  
-  // Try base activity ID match (for extended IDs like "base/sub")
-  if (baseActivityId && baseActivityId !== activityId) {
-    course = allCourses.find(c => c.activityId === baseActivityId);
-    if (course) return course;
-  }
-  
-  // Try prefix match (statement activity ID starts with course activity ID)
-  course = allCourses.find(c => activityId.startsWith(c.activityId + '/') || activityId === c.activityId);
-  return course || null;
-}
-
-// POST /xapi/statements - Store statement(s)
-app.post('/xapi/statements', async (req, res) => {
-  console.log(`[xAPI POST] /xapi/statements endpoint called`);
-  try {
+app.post('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const statement = Array.isArray(req.body) ? req.body[0] : req.body;
-    console.log(`[xAPI Statements] Received statement:`, {
-      hasActor: !!statement?.actor,
-      hasObject: !!statement?.object,
-      actorMbox: statement?.actor?.mbox,
-      objectId: statement?.object?.id,
-      bodyType: Array.isArray(req.body) ? 'array' : typeof req.body,
-      bodyLength: JSON.stringify(req.body).length
-    });
-    const result = await xapiLRS.saveStatement(req.body);
-    
-    // Auto-sync progress when statements are saved
-    console.log(`[Progress] Checking statement for sync:`, {
-      hasStatement: !!statement,
-      hasActor: !!statement?.actor,
-      hasObject: !!statement?.object,
-      actorMbox: statement?.actor?.mbox,
-      objectId: statement?.object?.id
-    });
-    
-    if (statement && statement.actor && statement.object) {
-      try {
-        const actor = statement.actor;
-        const activityId = statement.object.id;
-        const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : null;
-        
-        console.log(`[Progress] ✅ Auto-sync triggered: userEmail=${userEmail}, activityId=${activityId}`);
-        
-        if (userEmail && activityId) {
-          // Find course by activityId (handles extended IDs)
-          const course = await findCourseByActivityId(activityId);
-          
-          if (course) {
-            // Use the course's base activityId for syncing (not the extended one from statement)
-            const baseActivityId = course.activityId;
-            console.log(`[Progress] ✅ Found course ${course.courseId} for activityId ${activityId} (base: ${baseActivityId}), syncing progress...`);
-            // Sync progress in background (don't wait for it)
-            progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId)
-              .then(result => {
-                if (result) {
-                  console.log(`[Progress] ✅✅ Sync completed: status=${result.completionStatus}, timeSpent=${result.timeSpent}s, score=${result.score}, progressPercent=${result.progressPercent}`);
-                } else {
-                  console.log(`[Progress] ⚠️ Sync returned null (no statements found)`);
-                }
-              })
-              .catch(err => {
-                console.error('[Progress] ❌ Auto-sync error:', err);
-                console.error('[Progress] ❌ Error stack:', err.stack);
-              });
-          } else {
-            const allCourses = await coursesStorage.getAllCourses();
-            console.warn(`[Progress] ⚠️ No course found for activityId: ${activityId} (base: ${extractBaseActivityId(activityId)})`);
-            console.warn(`[Progress] Available courses:`, allCourses.map(c => ({ id: c.courseId, activityId: c.activityId })));
-          }
-        } else {
-          console.warn(`[Progress] ⚠️ Missing userEmail or activityId: userEmail=${userEmail}, activityId=${activityId}`);
-        }
-      } catch (syncErr) {
-        // Don't fail the statement save if sync fails
-        console.error('[Progress] ❌ Error auto-syncing progress:', syncErr);
-        console.error('[Progress] ❌ Error stack:', syncErr.stack);
+  
+    if (Array.isArray(req.body)) {
+      for (const stmt of req.body) {
+        const actorEmail = getAgentEmail(stmt?.actor);
+        assertActorMatches(user, actorEmail);
       }
     } else {
-      console.warn(`[Progress] ⚠️ Statement missing required fields for sync`);
+      const actorEmail = getAgentEmail(statement?.actor);
+      assertActorMatches(user, actorEmail);
     }
-    res.status(result.status).json(result.data);
-  } catch (error) {
-    console.error('[xAPI] Error saving statement:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
-// GET /xapi/statements - Query statements or get by statementId
-app.get('/xapi/statements', async (req, res) => {
-  try {
-    // If statementId is in query params, get specific statement (Storyline uses this)
+    const result = await xapiLRS.saveStatement(req.body);
+    
+  // Process progress sync asynchronously
+  processStatementProgressSync(statement).catch(err => {
+    serverLogger.error({ error: err.message }, 'Statement progress sync error');
+  });
+  
+    res.status(result.status).json(result.data);
+}));
+
+app.get('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
+  
     if (req.query.statementId) {
       const result = await xapiLRS.getStatement(req.query.statementId);
       if (result.status === 404) {
         return res.status(404).send();
       }
+      if (user.role !== 'admin') {
+        const actorEmail = getAgentEmail(result.data?.actor);
+        assertActorMatches(user, actorEmail);
+      }
       return res.status(result.status).json(result.data);
     }
     
-    // Otherwise, query statements
+    if (user.role !== 'admin' && req.query.agent) {
+      try {
+        const agentObj = typeof req.query.agent === 'string' ? JSON.parse(decodeURIComponent(req.query.agent)) : req.query.agent;
+        const agentEmail = getAgentEmail(agentObj);
+        assertActorMatches(user, agentEmail);
+      } catch (parseError) {
+      throw new ValidationError('Invalid agent parameter format');
+      }
+    }
+  
+    if (user.role !== 'admin' && !req.query.agent) {
+      req.query.agent = JSON.stringify({
+        objectType: 'Agent',
+        mbox: `mailto:${user.email}`
+      });
+    }
+  
     const result = await xapiLRS.queryStatements(req.query);
     res.status(result.status).json(result.data);
-  } catch (error) {
-    console.error('[xAPI] Error querying statements:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// PUT /xapi/statements - Update statement (Storyline uses statementId query param)
-app.put('/xapi/statements', async (req, res) => {
-  console.log(`[xAPI PUT] /xapi/statements endpoint called`);
-  try {
-    // Storyline sends statementId as query parameter
+app.put('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const statementId = req.query.statementId;
     
     if (!statementId) {
-      return res.status(400).json({ error: 'statementId required' });
+    throw new ValidationError('statementId required');
     }
     
-    // Update the statement (for now, just save it as a new one)
-    // In a real LRS, you'd update the existing statement
     const statement = req.body;
     statement.id = statementId;
     
-    console.log(`[xAPI Statements PUT] Received statement:`, {
-      statementId,
-      hasActor: !!statement?.actor,
-      hasObject: !!statement?.object,
-      actorMbox: statement?.actor?.mbox,
-      objectId: statement?.object?.id,
-      bodyType: typeof req.body,
-      bodyLength: JSON.stringify(req.body).length
-    });
-    
+    const actorEmail = getAgentEmail(statement?.actor);
+    assertActorMatches(user, actorEmail);
+
     const result = await xapiLRS.saveStatement(statement);
     
-    // Auto-sync progress when statements are saved (same as POST)
-    console.log(`[Progress PUT] Checking statement for sync:`, {
-      hasStatement: !!statement,
-      hasActor: !!statement?.actor,
-      hasObject: !!statement?.object,
-      actorMbox: statement?.actor?.mbox,
-      objectId: statement?.object?.id
-    });
-    
-    if (statement && statement.actor && statement.object) {
-      try {
-        const actor = statement.actor;
-        const activityId = statement.object.id;
-        const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : null;
-        
-        console.log(`[Progress PUT] ✅ Auto-sync triggered: userEmail=${userEmail}, activityId=${activityId}`);
-        
-        if (userEmail && activityId) {
-          // Find course by activityId (handles extended IDs)
-          const course = await findCourseByActivityId(activityId);
-          
-          if (course) {
-            // Use the course's base activityId for syncing (not the extended one from statement)
-            const baseActivityId = course.activityId;
-            console.log(`[Progress PUT] ✅ Found course ${course.courseId} for activityId ${activityId} (base: ${baseActivityId}), syncing progress...`);
-            // Sync progress in background (don't wait for it)
-            progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId)
-              .then(result => {
-                if (result) {
-                  console.log(`[Progress PUT] ✅✅ Sync completed: status=${result.completionStatus}, timeSpent=${result.timeSpent}s, score=${result.score}, progressPercent=${result.progressPercent}`);
-                } else {
-                  console.log(`[Progress PUT] ⚠️ Sync returned null (no statements found)`);
-                }
-              })
-              .catch(err => {
-                console.error('[Progress PUT] ❌ Auto-sync error:', err);
-                console.error('[Progress PUT] ❌ Error stack:', err.stack);
-              });
-          } else {
-            const allCourses = await coursesStorage.getAllCourses();
-            console.warn(`[Progress PUT] ⚠️ No course found for activityId: ${activityId} (base: ${extractBaseActivityId(activityId)})`);
-            console.warn(`[Progress PUT] Available courses:`, allCourses.map(c => ({ id: c.courseId, activityId: c.activityId })));
-          }
-        } else {
-          console.warn(`[Progress PUT] ⚠️ Missing userEmail or activityId: userEmail=${userEmail}, activityId=${activityId}`);
-        }
-      } catch (syncErr) {
-        // Don't fail the statement save if sync fails
-        console.error('[Progress PUT] ❌ Error auto-syncing progress:', syncErr);
-        console.error('[Progress PUT] ❌ Error stack:', syncErr.stack);
-      }
-    } else {
-      console.warn(`[Progress PUT] ⚠️ Statement missing required fields for sync`);
-    }
+  // Process progress sync asynchronously
+  processStatementProgressSync(statement).catch(err => {
+    serverLogger.error({ error: err.message }, 'Statement progress sync error');
+  });
     
     res.status(result.status).json(result.data);
-  } catch (error) {
-    console.error('[xAPI] Error updating statement:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// GET /xapi/statements/:id - Get specific statement (path parameter)
-app.get('/xapi/statements/:id', async (req, res) => {
-  try {
+app.get('/xapi/statements/:id', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const result = await xapiLRS.getStatement(req.params.id);
+  
     if (result.status === 404) {
       return res.status(404).send();
     }
+  
+    if (user.role !== 'admin') {
+      const actorEmail = getAgentEmail(result.data?.actor);
+      assertActorMatches(user, actorEmail);
+    }
+  
     res.status(result.status).json(result.data);
-  } catch (error) {
-    console.error('[xAPI] Error getting statement:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// GET /xapi/activities/state - Get activity state
-app.get('/xapi/activities/state', async (req, res) => {
-  try {
+// xAPI State endpoints
+app.get('/xapi/activities/state', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const { activityId, agent, stateId, registration } = req.query;
     
-    // Log request for debugging
     if (!agent) {
-      console.warn('[xAPI State GET] Missing agent parameter. Query params:', Object.keys(req.query));
-      return res.status(400).json({ error: 'Missing required parameter: agent' });
+    throw new ValidationError('Missing required parameter: agent');
     }
-    
     if (!activityId || !stateId) {
-      console.warn('[xAPI State GET] Missing required parameters. activityId:', !!activityId, 'stateId:', !!stateId);
-      return res.status(400).json({ error: 'Missing required parameters: activityId, stateId' });
+    throw new ValidationError('Missing required parameters: activityId, stateId');
     }
     
-    // Parse agent - handle URL encoding
     let agentObj;
     try {
-      // Try decoding first (most common case)
       const decoded = decodeURIComponent(agent);
       agentObj = JSON.parse(decoded);
     } catch (e1) {
       try {
-        // If that fails, try parsing directly
         agentObj = JSON.parse(agent);
       } catch (e2) {
-        // If both fail, log and return error
-        console.error('[xAPI] Failed to parse agent:', agent);
-        return res.status(400).json({ error: 'Invalid agent parameter format' });
+      throw new ValidationError('Invalid agent parameter format');
       }
     }
-    
-    // Log agent details for debugging
-    if (stateId === 'resume') {
-      console.log(`[xAPI State GET] Resume request:`, {
-        activityId,
-        stateId,
-        registration,
-        agentEmail: agentObj.mbox?.replace('mailto:', ''),
-        agentName: agentObj.name
-      });
-    }
+
+    const agentEmail = getAgentEmail(agentObj);
+    assertActorMatches(user, agentEmail);
     
     const result = await xapiLRS.getState(activityId, agentObj, stateId, registration || null);
+  
     if (result.status === 404) {
-      // Return empty response for 404 (xAPI spec) - this is normal for first-time access
-      // No resume state exists yet, which is expected
-      console.log(`[xAPI State GET] No state found for stateId: ${stateId}`);
       return res.status(404).send();
     }
     
-    // Log what we're returning
-    const dataLength = typeof result.data === 'string' ? result.data.length : JSON.stringify(result.data).length;
-    const preview = typeof result.data === 'string' ? result.data.substring(0, 200) : JSON.stringify(result.data).substring(0, 200);
-    console.log(`[xAPI State GET] Returning state (${result.status}):`, {
-      stateId,
-      dataType: typeof result.data,
-      dataLength,
-      preview
-    });
-    
-    // Storyline expects the state as-is (string), not as JSON
-    // If it's a string, send it as text/plain, otherwise as JSON
     if (typeof result.data === 'string') {
       res.status(result.status).type('text/plain').send(result.data);
     } else {
       res.status(result.status).json(result.data);
     }
-  } catch (error) {
-    console.error('[xAPI] Error getting state:', error);
-    console.error('[xAPI] Request params:', { 
-      activityId: req.query.activityId, 
-      stateId: req.query.stateId,
-      hasAgent: !!req.query.agent,
-      registration: req.query.registration
-    });
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// PUT /xapi/activities/state - Save activity state
-// Note: Raw body parsing middleware is applied above, before express.json()
-app.put('/xapi/activities/state', async (req, res) => {
-  console.log(`[xAPI State PUT Handler] Request received - Content-Type: ${req.headers['content-type']}, Body type: ${typeof req.body}`);
-  
-  try {
+app.put('/xapi/activities/state', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const { activityId, agent, stateId, registration } = req.query;
+  
     if (!activityId || !agent || !stateId) {
-      return res.status(400).json({ error: 'Missing required parameters: activityId, agent, stateId' });
-    }
-    
-    // Log what state is being saved
-    if (stateId === 'resume') {
-      console.log(`[xAPI State PUT] Saving resume state:`, {
-        stateId,
-        registration,
-        contentType: req.headers['content-type'],
-        bodyType: typeof req.body,
-        bodyLength: typeof req.body === 'object' ? JSON.stringify(req.body).length : (req.body?.length || 0),
-        bodyPreview: typeof req.body === 'object' ? JSON.stringify(req.body).substring(0, 200) : String(req.body).substring(0, 200),
-        bodyKeys: typeof req.body === 'object' && req.body !== null ? Object.keys(req.body) : 'N/A'
-      });
+    throw new ValidationError('Missing required parameters: activityId, agent, stateId');
     }
     
     const agentObj = typeof agent === 'string' ? JSON.parse(decodeURIComponent(agent)) : agent;
+    const agentEmail = getAgentEmail(agentObj);
+    assertActorMatches(user, agentEmail);
+  
     const result = await xapiLRS.saveState(activityId, agentObj, stateId, req.body, registration || null);
     res.status(result.status).send();
-  } catch (error) {
-    console.error('[xAPI] Error saving state:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// DELETE /xapi/activities/state - Delete activity state
-app.delete('/xapi/activities/state', async (req, res) => {
-  try {
+app.delete('/xapi/activities/state', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const { activityId, agent, stateId, registration } = req.query;
+  
     if (!activityId || !agent || !stateId) {
-      return res.status(400).json({ error: 'Missing required parameters: activityId, agent, stateId' });
+    throw new ValidationError('Missing required parameters: activityId, agent, stateId');
     }
+  
     const agentObj = typeof agent === 'string' ? JSON.parse(agent) : agent;
+    const agentEmail = getAgentEmail(agentObj);
+    assertActorMatches(user, agentEmail);
+  
     const result = await xapiLRS.deleteState(activityId, agentObj, stateId, registration || null);
     res.status(result.status).send();
-  } catch (error) {
-    console.error('[xAPI] Error deleting state:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// GET /xapi/activities/profile - Get activity profile
-app.get('/xapi/activities/profile', async (req, res) => {
-  try {
+// xAPI Profile endpoints
+app.get('/xapi/activities/profile', xapiLimiter, asyncHandler(async (req, res) => {
+    requireXapiAuth(req);
     const { activityId, profileId } = req.query;
+  
     if (!activityId || !profileId) {
-      return res.status(400).json({ error: 'Missing required parameters: activityId, profileId' });
+    throw new ValidationError('Missing required parameters: activityId, profileId');
     }
+  
     const result = await xapiLRS.getActivityProfile(activityId, profileId);
     if (result.status === 404) {
       return res.status(404).send();
     }
     res.status(result.status).json(result.data);
-  } catch (error) {
-    console.error('[xAPI] Error getting activity profile:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// PUT /xapi/activities/profile - Save activity profile
-app.put('/xapi/activities/profile', async (req, res) => {
-  try {
+app.put('/xapi/activities/profile', xapiLimiter, asyncHandler(async (req, res) => {
+    requireXapiAuth(req);
     const { activityId, profileId } = req.query;
+  
     if (!activityId || !profileId) {
-      return res.status(400).json({ error: 'Missing required parameters: activityId, profileId' });
+    throw new ValidationError('Missing required parameters: activityId, profileId');
     }
+  
     const result = await xapiLRS.saveActivityProfile(activityId, profileId, req.body);
     res.status(result.status).send();
-  } catch (error) {
-    console.error('[xAPI] Error saving activity profile:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// DELETE /xapi/activities/profile - Delete activity profile
-app.delete('/xapi/activities/profile', async (req, res) => {
-  try {
+app.delete('/xapi/activities/profile', xapiLimiter, asyncHandler(async (req, res) => {
+    requireXapiAuth(req);
     const { activityId, profileId } = req.query;
+  
     if (!activityId || !profileId) {
-      return res.status(400).json({ error: 'Missing required parameters: activityId, profileId' });
+    throw new ValidationError('Missing required parameters: activityId, profileId');
     }
+  
     const result = await xapiLRS.deleteActivityProfile(activityId, profileId);
     res.status(result.status).send();
-  } catch (error) {
-    console.error('[xAPI] Error deleting activity profile:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// GET /xapi/agents/profile - Get agent profile
-app.get('/xapi/agents/profile', async (req, res) => {
-  try {
+app.get('/xapi/agents/profile', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const { agent, profileId } = req.query;
+  
     if (!agent || !profileId) {
-      return res.status(400).json({ error: 'Missing required parameters: agent, profileId' });
+    throw new ValidationError('Missing required parameters: agent, profileId');
     }
+  
     const agentObj = typeof agent === 'string' ? JSON.parse(agent) : agent;
+    const agentEmail = getAgentEmail(agentObj);
+    assertActorMatches(user, agentEmail);
+  
     const result = await xapiLRS.getAgentProfile(agentObj, profileId);
     if (result.status === 404) {
       return res.status(404).send();
     }
     res.status(result.status).json(result.data);
-  } catch (error) {
-    console.error('[xAPI] Error getting agent profile:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// PUT /xapi/agents/profile - Save agent profile
-app.put('/xapi/agents/profile', async (req, res) => {
-  try {
+app.put('/xapi/agents/profile', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const { agent, profileId } = req.query;
+  
     if (!agent || !profileId) {
-      return res.status(400).json({ error: 'Missing required parameters: agent, profileId' });
+    throw new ValidationError('Missing required parameters: agent, profileId');
     }
+  
     const agentObj = typeof agent === 'string' ? JSON.parse(agent) : agent;
+    const agentEmail = getAgentEmail(agentObj);
+    assertActorMatches(user, agentEmail);
+  
     const result = await xapiLRS.saveAgentProfile(agentObj, profileId, req.body);
     res.status(result.status).send();
-  } catch (error) {
-    console.error('[xAPI] Error saving agent profile:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
-// DELETE /xapi/agents/profile - Delete agent profile
-app.delete('/xapi/agents/profile', async (req, res) => {
-  try {
+app.delete('/xapi/agents/profile', xapiLimiter, asyncHandler(async (req, res) => {
+    const { user } = requireXapiAuth(req);
     const { agent, profileId } = req.query;
+  
     if (!agent || !profileId) {
-      return res.status(400).json({ error: 'Missing required parameters: agent, profileId' });
+    throw new ValidationError('Missing required parameters: agent, profileId');
     }
+  
     const agentObj = typeof agent === 'string' ? JSON.parse(agent) : agent;
+    const agentEmail = getAgentEmail(agentObj);
+    assertActorMatches(user, agentEmail);
+  
     const result = await xapiLRS.deleteAgentProfile(agentObj, profileId);
     res.status(result.status).send();
-  } catch (error) {
-    console.error('[xAPI] Error deleting agent profile:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
 // ============================================================================
 // User Progress API Routes
 // ============================================================================
 
-// GET /api/users/:userId/courses - Get user's course progress
-app.get('/api/users/:userId/courses', async (req, res) => {
-  try {
+app.get('/api/users/:userId/courses', apiLimiter, asyncHandler(async (req, res) => {
     const { userId } = req.params;
-    const user = verifyAuth(req);
+  const user = requireAuth(req);
     
-    // Users can only view their own progress (unless admin)
-    // Normalize userId: if numeric, use email; if email, use as-is
     const normalizedUserId = userId.includes('@') ? userId : user.email || userId;
     const currentUserEmail = user.email;
-    if (!user || (currentUserEmail !== normalizedUserId && user.role !== 'admin')) {
-      return res.status(403).json({ error: 'Access denied' });
+  
+  if (currentUserEmail !== normalizedUserId && user.role !== 'admin') {
+    throw new AuthorizationError('Access denied');
     }
     
-    // Use email for progress lookup (more consistent than numeric IDs)
     const progressUserId = normalizedUserId.includes('@') ? normalizedUserId : currentUserEmail || normalizedUserId;
     const progressList = await progressStorage.getUserProgress(progressUserId);
     
-    // Enrich with course details
+  // Pre-fetch all courses to avoid N+1
+  const allCourses = await coursesStorage.getAllCourses();
+  const courseMap = new Map(allCourses.map(c => [c.courseId, c]));
+  
     const coursesWithProgress = await Promise.all(
       progressList.map(async (progress) => {
-        try {
-          const course = await coursesStorage.getCourseById(progress.courseId);
+      const course = courseMap.get(progress.courseId);
           if (!course) return null;
           
-          // Sync progress from xAPI statements if available
           if (course.activityId) {
             try {
-              console.log(`[Progress] Syncing progress for ${progressUserId} / ${progress.courseId} / ${course.activityId}`);
-              const syncedProgress = await progressStorage.syncProgressFromStatements(
+              const syncResult = await progressStorage.syncProgressFromStatements(
                 progressUserId, 
                 progress.courseId, 
                 course.activityId
               );
-              // Use synced progress if available
-              if (syncedProgress) {
-                progress = syncedProgress;
-                console.log(`[Progress] ✅ Synced: status=${progress.completionStatus}, timeSpent=${progress.timeSpent}s, score=${progress.score}, progressPercent=${progress.progressPercent}`);
-              } else {
-                console.log(`[Progress] ⚠️ Sync returned null, using existing progress`);
+              if (syncResult?.updatedProgress) {
+                progress = syncResult.updatedProgress;
               }
-            } catch (syncError) {
-              console.error('[Progress] ❌ Sync error:', syncError);
+        } catch (err) {
+          serverLogger.error({ courseId: progress.courseId, error: err.message }, 'Sync error');
             }
           }
           
-          // Use progressPercent from database (synced or existing), fallback to calculation
           let progressPercent = progress.progressPercent;
           if (progressPercent === undefined || progressPercent === null) {
-            // Fallback calculation if not in database
             if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed') {
               progressPercent = 100;
             } else if (progress.completionStatus === 'in_progress') {
@@ -1160,53 +1340,37 @@ app.get('/api/users/:userId/courses', async (req, res) => {
             enrollmentStatus: progress.enrollmentStatus,
             completionStatus: progress.completionStatus,
             score: progress.score,
-            progressPercent: progressPercent, // Use from database
-            timeSpent: progress.timeSpent || 0, // in seconds
+        progressPercent,
+        timeSpent: progress.timeSpent || 0,
             attempts: progress.attempts || 0,
             enrolledAt: progress.enrolledAt,
             startedAt: progress.startedAt,
             completedAt: progress.completedAt,
             lastAccessedAt: progress.lastAccessedAt
           };
-        } catch (error) {
-          console.error(`[Progress] Error enriching course ${progress.courseId}:`, error);
-          return null;
-        }
-      })
-    );
-    
-    // Filter out nulls
-    const validCourses = coursesWithProgress.filter(c => c !== null);
-    
-    res.json(validCourses);
-  } catch (error) {
-    console.error('[Progress] Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+    })
+  );
+  
+  res.json(coursesWithProgress.filter(c => c !== null));
+}));
 
-// POST /api/users/:userId/courses/:courseId/enroll - Enroll user in course
-app.post('/api/users/:userId/courses/:courseId/enroll', async (req, res) => {
-  try {
+app.post('/api/users/:userId/courses/:courseId/enroll', apiLimiter, asyncHandler(async (req, res) => {
     const { userId, courseId } = req.params;
-    const user = verifyAuth(req);
+  const user = requireAuth(req);
     
-    // Normalize userId: use email if userId is numeric
     const normalizedUserId = userId.includes('@') ? userId : user.email || userId;
     const currentUserEmail = user.email;
-    if (!user || (currentUserEmail !== normalizedUserId && user.role !== 'admin')) {
-      return res.status(403).json({ error: 'Access denied' });
+  
+  if (currentUserEmail !== normalizedUserId && user.role !== 'admin') {
+    throw new AuthorizationError('Access denied');
     }
     
-    // Verify course exists
     const course = await coursesStorage.getCourseById(courseId);
     if (!course) {
-      return res.status(404).json({ error: 'Course not found' });
+    throw new NotFoundError('Course');
     }
     
-    // Use email for progress (more consistent than numeric IDs)
     const progressUserId = normalizedUserId.includes('@') ? normalizedUserId : currentUserEmail || normalizedUserId;
-    // Create or update enrollment
     const progress = await progressStorage.updateProgress(progressUserId, courseId, {
       enrollmentStatus: 'enrolled',
       completionStatus: 'not_started'
@@ -1219,66 +1383,38 @@ app.post('/api/users/:userId/courses/:courseId/enroll', async (req, res) => {
       completionStatus: progress.completionStatus,
       enrolledAt: progress.enrolledAt
     });
-  } catch (error) {
-    console.error('[Progress] Enrollment error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+}));
 
 // ============================================================================
 // Admin API Routes
 // ============================================================================
 
-// Middleware to check if user is admin
-function requireAdmin(req) {
-  const user = verifyAuth(req);
-  if (!user) {
-    throw new Error('Authentication required');
-  }
-  if (user.role !== 'admin') {
-    throw new Error('Admin access required');
-  }
-  return user;
-}
-
-// GET /api/admin/courses - Get all courses (admin view)
-app.get('/api/admin/courses', async (req, res) => {
-  try {
+app.get('/api/admin/courses', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     const courses = await coursesStorage.getAllCourses();
     
-    // Calculate stats from progress data
-    const allProgress = await progressStorage.getAllProgress();
+  // Pre-fetch all progress to avoid N+1 (with pagination)
+  const allProgress = await fetchAllProgress();
+  
     const coursesWithStats = courses.map(course => {
       const courseProgress = allProgress.filter(p => p.courseId === course.courseId);
       const enrollmentCount = courseProgress.filter(p => p.enrollmentStatus === 'enrolled' || p.enrollmentStatus === 'in_progress').length;
       const attemptCount = courseProgress.reduce((sum, p) => sum + (p.attempts || 0), 0);
       
-      return {
-        ...course,
-        enrollmentCount,
-        attemptCount
-      };
+    return { ...course, enrollmentCount, attemptCount };
     });
     
     res.json(coursesWithStats);
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+}));
 
-// GET /api/admin/extract-activity-id - Extract activity ID from tincan.xml
-app.get('/api/admin/extract-activity-id', async (req, res) => {
-  try {
+app.get('/api/admin/extract-activity-id', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     const { coursePath } = req.query;
     
     if (!coursePath) {
-      return res.status(400).json({ error: 'coursePath query parameter is required' });
+    throw new ValidationError('coursePath query parameter is required');
     }
     
-    // Try to get tincan.xml from blob storage
     const tincanPath = `${coursePath}/tincan.xml`.replace(/\/+/g, '/');
     
     try {
@@ -1286,67 +1422,34 @@ app.get('/api/admin/extract-activity-id', async (req, res) => {
       const xmlString = xmlContent.toString('utf-8');
       const activityId = await extractActivityIdFromXml(xmlString);
       
-      res.json({ 
-        activityId,
-        coursePath,
-        tincanPath 
-      });
+    res.json({ activityId, coursePath, tincanPath });
     } catch (error) {
       if (error.message.includes('not found')) {
-        return res.status(404).json({ error: `tincan.xml not found at ${tincanPath}. Make sure course files are uploaded to blob storage.` });
+      throw new NotFoundError(`tincan.xml at ${tincanPath}`);
       }
       throw error;
     }
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+}));
 
-// GET /api/admin/find-thumbnail - Find thumbnail image in course folder
-app.get('/api/admin/find-thumbnail', async (req, res) => {
-  try {
+app.get('/api/admin/find-thumbnail', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     const { coursePath } = req.query;
     
     if (!coursePath) {
-      return res.status(400).json({ error: 'coursePath query parameter is required' });
-    }
-    
-    // Common thumbnail file names and locations to search
-    const thumbnailPatterns = [
-      'mobile/poster.jpg',
-      'mobile/poster.png',
-      'mobile/poster.webp',
-      'mobile/poster_*.jpg',
-      'poster.jpg',
-      'poster.png',
-      'poster.webp',
-      'thumbnail.jpg',
-      'thumbnail.png',
-      'thumbnail.webp',
-      'thumb.jpg',
-      'thumb.png'
-    ];
-    
-    try {
-      // List all files in the course folder
+    throw new ValidationError('coursePath query parameter is required');
+  }
+  
+  try {
       const allBlobs = await blobStorage.listBlobs(coursePath);
-      
-      // Search for thumbnail files (case-insensitive)
       const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
       const foundThumbnails = [];
       
       for (const blob of allBlobs) {
         const blobName = blob.name.toLowerCase();
-        const blobPath = blob.name;
-        const fileName = blobPath.split('/').pop().toLowerCase();
-        
-        // Check if it's an image file
+      const fileName = blob.name.split('/').pop().toLowerCase();
         const isImage = imageExtensions.some(ext => blobName.endsWith(ext));
         
         if (isImage) {
-          // Check if filename contains common thumbnail keywords
           const isThumbnail = fileName.includes('poster') || 
                              fileName.includes('thumbnail') || 
                              fileName.includes('thumb') ||
@@ -1354,40 +1457,24 @@ app.get('/api/admin/find-thumbnail', async (req, res) => {
           
           if (isThumbnail) {
             foundThumbnails.push({
-              path: `/course/${blobPath}`,
-              name: blobPath.split('/').pop(),
+            path: `/course/${blob.name}`,
+            name: blob.name.split('/').pop(),
               size: blob.size
             });
           }
         }
       }
       
-      // Sort by priority: prefer thumbnail.jpg first, then mobile/poster.jpg, then other poster files
       foundThumbnails.sort((a, b) => {
-        const aName = a.name.toLowerCase();
-        const bName = b.name.toLowerCase();
-        const aPath = a.path.toLowerCase();
-        const bPath = b.path.toLowerCase();
-        
-        // Priority 0: thumbnail.jpg (exact match)
-        const aPriority = aName === 'thumbnail.jpg' ? 0 :
-                          aName === 'thumbnail.png' ? 0 :
-                          aName === 'thumbnail.webp' ? 0 :
-                          // Priority 1: mobile/poster.jpg
-                          aPath.includes('mobile/poster') ? 1 :
-                          // Priority 2: other poster files
-                          aName.includes('poster') ? 2 :
-                          // Priority 3: other thumbnail files
-                          aName.includes('thumbnail') ? 3 : 4;
-        
-        const bPriority = bName === 'thumbnail.jpg' ? 0 :
-                          bName === 'thumbnail.png' ? 0 :
-                          bName === 'thumbnail.webp' ? 0 :
-                          bPath.includes('mobile/poster') ? 1 :
-                          bName.includes('poster') ? 2 :
-                          bName.includes('thumbnail') ? 3 : 4;
-        
-        return aPriority - bPriority;
+      const getPriority = (item) => {
+        const name = item.name.toLowerCase();
+        const path = item.path.toLowerCase();
+        if (name.startsWith('thumbnail.')) return 0;
+        if (path.includes('mobile/poster')) return 1;
+        if (name.includes('poster')) return 2;
+        return 3;
+      };
+      return getPriority(a) - getPriority(b);
       });
       
       if (foundThumbnails.length > 0) {
@@ -1401,42 +1488,30 @@ app.get('/api/admin/find-thumbnail', async (req, res) => {
         res.json({ 
           thumbnailUrl: null,
           found: false,
-          message: 'No thumbnail images found. Common locations: thumbnail.jpg, mobile/poster.jpg, poster.jpg',
+        message: 'No thumbnail images found',
           coursePath 
         });
       }
     } catch (error) {
       if (error.message.includes('not found')) {
-        return res.status(404).json({ error: `Course folder not found: ${coursePath}. Make sure course files are uploaded to blob storage.` });
+      throw new NotFoundError(`Course folder: ${coursePath}`);
       }
       throw error;
     }
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+}));
 
-// POST /api/admin/courses - Create new course
-app.post('/api/admin/courses', async (req, res) => {
-  try {
+app.post('/api/admin/courses', apiLimiter, validateBody(createCourseSchema), asyncHandler(async (req, res) => {
     requireAdmin(req);
     const { title, description, thumbnailUrl, activityId, launchFile, coursePath } = req.body;
     
-    if (!title || !activityId || !launchFile) {
-      return res.status(400).json({ error: 'Title, activityId, and launchFile are required' });
-    }
-
-    // Generate course ID from title
     const courseId = title.toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .substring(0, 50);
 
-    // Check if course already exists
     const existing = await coursesStorage.getCourseById(courseId);
     if (existing) {
-      return res.status(400).json({ error: 'Course with this title already exists' });
+    throw new ValidationError('Course with this title already exists');
     }
 
     const newCourse = {
@@ -1446,215 +1521,171 @@ app.post('/api/admin/courses', async (req, res) => {
       thumbnailUrl: thumbnailUrl || '/course/mobile/poster.jpg',
       activityId,
       launchFile,
-      // Default to empty string (root level) if coursePath not provided
-      // Files are typically uploaded to root level in blob storage
       coursePath: coursePath || '',
       modules: []
     };
 
     await coursesStorage.saveCourse(newCourse);
     
-    console.log(`[Admin] Course created: ${courseId} - ${title}`);
+  serverLogger.info({ courseId, title }, 'Course created');
     res.status(201).json(newCourse);
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+}));
 
-// PUT /api/admin/courses/:courseId - Update course
-app.put('/api/admin/courses/:courseId', async (req, res) => {
-  try {
+app.put('/api/admin/courses/:courseId', apiLimiter, validateBody(updateCourseSchema), asyncHandler(async (req, res) => {
     requireAdmin(req);
     const { courseId } = req.params;
     const existing = await coursesStorage.getCourseById(courseId);
     
     if (!existing) {
-      return res.status(404).json({ error: 'Course not found' });
+    throw new NotFoundError('Course');
     }
 
     const updates = req.body;
     const updatedCourse = {
       ...existing,
       ...updates,
-      courseId: existing.courseId, // Don't allow changing courseId
+    courseId: existing.courseId,
       updatedAt: new Date().toISOString()
     };
 
     await coursesStorage.saveCourse(updatedCourse);
     
-    console.log(`[Admin] Course updated: ${courseId}`);
+  serverLogger.info({ courseId }, 'Course updated');
     res.json(updatedCourse);
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+}));
 
-// DELETE /api/admin/courses/:courseId - Delete course
-app.delete('/api/admin/courses/:courseId', async (req, res) => {
-  try {
+app.delete('/api/admin/courses/:courseId', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     const { courseId } = req.params;
     const existing = await coursesStorage.getCourseById(courseId);
     
     if (!existing) {
-      return res.status(404).json({ error: 'Course not found' });
+    throw new NotFoundError('Course');
     }
 
     await coursesStorage.deleteCourse(courseId);
-    console.log(`[Admin] Course deleted: ${courseId}`);
+  serverLogger.info({ courseId }, 'Course deleted');
     res.status(204).send();
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+}));
 
-// GET /api/admin/progress - Get learner progress (admin view)
-app.get('/api/admin/progress', async (req, res) => {
-  try {
+// Helper to fetch all progress with pagination
+async function fetchAllProgress() {
+  let allProgress = [];
+  let continuationToken = null;
+  do {
+    const result = await progressStorage.getAllProgress({ continuationToken });
+    allProgress = allProgress.concat(result.data);
+    continuationToken = result.continuationToken;
+  } while (continuationToken);
+  return allProgress;
+}
+
+app.get('/api/admin/progress', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     
-    // Get all progress
-    const allProgress = await progressStorage.getAllProgress();
-    
-    // Enrich with course and user details
-    const enrichedProgress = await Promise.all(
-      allProgress.map(async (progress) => {
-        try {
-          const course = await coursesStorage.getCourseById(progress.courseId);
+  // Pre-fetch all data to avoid N+1
+  const [allProgress, allCourses, allUsers] = await Promise.all([
+    fetchAllProgress(),
+    coursesStorage.getAllCourses(),
+    auth.getAllUsers()
+  ]);
+  
+  const courseMap = new Map(allCourses.map(c => [c.courseId, c]));
+  const userMap = new Map(allUsers.map(u => [u.email?.toLowerCase(), u]));
+  
+  const enrichedProgress = allProgress.map(progress => {
+    const course = courseMap.get(progress.courseId);
           if (!course) return null;
           
-          // Get user details from auth system
-          // Progress.userId should be email (after migration), but handle both cases for backward compatibility
-          let userEmail = null;
+    let userEmail = progress.userId.includes('@') ? progress.userId : null;
           let firstName = null;
           let lastName = null;
           
-          if (progress.userId.includes('@')) {
-            // userId is already an email - use it and try to get user details
-            userEmail = progress.userId;
-            try {
-              const allUsers = await auth.getAllUsers();
-              const user = allUsers.find(u => u.email === userEmail);
+    if (userEmail) {
+      const user = userMap.get(userEmail.toLowerCase());
               if (user) {
                 const nameParts = (user.name || '').split(' ');
                 firstName = nameParts[0] || null;
                 lastName = nameParts.slice(1).join(' ') || null;
               } else {
-                // User not found in auth system, extract from email
-                const emailParts = userEmail.split('@')[0];
-                firstName = emailParts || null;
-              }
-            } catch (error) {
-              // If lookup fails, extract from email
-              const emailParts = userEmail.split('@')[0];
-              firstName = emailParts || null;
+        firstName = userEmail.split('@')[0] || null;
             }
           } else {
-            // userId is numeric (old data) - try to get user by ID and use their email
-            try {
-              const user = await auth.getUserById(progress.userId);
-              if (user) {
-                userEmail = user.email;
-                const nameParts = (user.name || '').split(' ');
-                firstName = nameParts[0] || null;
-                lastName = nameParts.slice(1).join(' ') || null;
-              } else {
-                // Fallback: generate email from userId (for old data)
                 userEmail = `${progress.userId}@example.com`;
                 firstName = progress.userId;
-              }
-            } catch (error) {
-              // Fallback: generate email from userId (for old data)
-              userEmail = `${progress.userId}@example.com`;
-              firstName = progress.userId;
-            }
-          }
-          
-          // Calculate progress percentage
-          // Priority: 1) Use progressPercent from database, 2) Check completion status/date, 3) Use score, 4) Default to 0
+    }
+    
           let progressPercent = 0;
           if (progress.progressPercent !== undefined && progress.progressPercent !== null) {
-            // Use progressPercent from database if available
             progressPercent = Number(progress.progressPercent);
           } else if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed' || progress.completedAt) {
-            // If completed (by status or date), show 100%
             progressPercent = 100;
-          } else if (progress.completionStatus === 'in_progress' && progress.score !== undefined && progress.score !== null) {
-            // If in progress, use score if available
-            progressPercent = Number(progress.score);
           } else if (progress.score !== undefined && progress.score !== null) {
-            // Fallback to score if available
             progressPercent = Number(progress.score);
           }
           
-          // Infer startedAt if missing but course has been started
           let startedAt = progress.startedAt;
-          if (!startedAt) {
-            const hasProgress = (progressPercent > 0) || 
-                               (progress.timeSpent && progress.timeSpent > 0) ||
-                               (progress.completionStatus && progress.completionStatus !== 'not_started');
-            if (hasProgress && progress.enrolledAt) {
-              // Use enrolledAt as a reasonable approximation for when the course was started
+    if (!startedAt && (progressPercent > 0 || progress.timeSpent > 0 || (progress.completionStatus && progress.completionStatus !== 'not_started'))) {
               startedAt = progress.enrolledAt;
-            }
           }
           
           return {
             userId: progress.userId,
             email: userEmail,
-            firstName: firstName,
-            lastName: lastName,
+      firstName,
+      lastName,
             courseId: course.courseId,
             courseTitle: course.title,
             enrollmentStatus: progress.enrollmentStatus,
             completionStatus: progress.completionStatus,
             score: progress.score,
-            progressPercent: progressPercent,
-            timeSpent: progress.timeSpent || 0, // in seconds (frontend can convert)
+      progressPercent,
+      timeSpent: progress.timeSpent || 0,
             attempts: progress.attempts || 0,
             enrolledAt: progress.enrolledAt,
-            startedAt: startedAt,
+      startedAt,
             completedAt: progress.completedAt,
             lastAccessedAt: progress.lastAccessedAt
           };
-        } catch (error) {
-          console.error(`[Admin Progress] Error enriching progress:`, error);
-          return null;
-        }
-      })
-    );
-    
-    // Filter out nulls and sort by last accessed
-    const validProgress = enrichedProgress
-      .filter(p => p !== null)
-      .sort((a, b) => {
+  }).filter(p => p !== null);
+  
+  enrichedProgress.sort((a, b) => {
         const aTime = a.lastAccessedAt ? new Date(a.lastAccessedAt).getTime() : 0;
         const bTime = b.lastAccessedAt ? new Date(b.lastAccessedAt).getTime() : 0;
         return bTime - aTime;
       });
     
-    res.json(validProgress);
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+  res.json(enrichedProgress);
+}));
 
-// ============================================================================
-// xAPI Verb Tracking Admin Endpoints
-// ============================================================================
+app.get('/api/admin/attempts', apiLimiter, asyncHandler(async (req, res) => {
+    requireAdmin(req);
+  
+  const [attempts, courses] = await Promise.all([
+    attemptsStorage.listAttempts(),
+    coursesStorage.getAllCourses()
+  ]);
+  
+  const courseMap = new Map(courses.map(c => [c.courseId, c]));
 
-// GET /api/admin/verbs - Get verb statistics and configurations
-app.get('/api/admin/verbs', async (req, res) => {
-  try {
+    const enriched = attempts.map(attempt => {
+      const course = courseMap.get(attempt.courseId);
+    return { ...attempt, courseTitle: course?.title || attempt.courseId };
+    }).sort((a, b) => {
+      const aTime = new Date(a.completedAt || a.launchedAt || 0).getTime();
+      const bTime = new Date(b.completedAt || b.launchedAt || 0).getTime();
+      return bTime - aTime;
+    });
+
+    res.json(enriched);
+}));
+
+// Admin verb endpoints
+app.get('/api/admin/verbs', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     
-    // Ensure verb tracker is initialized
     await verbTracker.initializeVerbTracker().catch(err => {
-      console.error('[Admin Verbs] Verb tracker initialization error:', err);
+    serverLogger.error({ error: err.message }, 'Verb tracker initialization error');
     });
     
     const stats = verbTracker.getVerbStats();
@@ -1671,157 +1702,282 @@ app.get('/api/admin/verbs', async (req, res) => {
         custom: allVerbs?.custom || {}
       }
     });
-  } catch (error) {
-    console.error('[Admin Verbs] Error:', error);
-    const status = error.message?.includes('Admin') ? 403 : error.message?.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ 
-      error: error.message || 'Failed to retrieve verb statistics',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
+}));
 
-// POST /api/admin/verbs - Add custom verb configuration
-app.post('/api/admin/verbs', async (req, res) => {
-  try {
+app.get('/api/admin/module-rules', apiLimiter, asyncHandler(async (req, res) => {
+    requireAdmin(req);
+    const { courseId } = req.query;
+  
+    if (!courseId) {
+    throw new ValidationError('courseId query parameter is required');
+    }
+  
+    const course = await coursesStorage.getCourseById(courseId);
+    if (!course) {
+    throw new NotFoundError('Course');
+    }
+  
+    const rules = await moduleRulesStorage.getModuleRules(courseId);
+    if (!rules || rules.length === 0) {
+      const defaultRules = (course.modules || []).map(module => ({
+        moduleId: module.id,
+        moduleName: module.name,
+        matchType: 'contains',
+        matchValue: module.id,
+        completionVerbs: [],
+        scoreThreshold: null
+      }));
+      return res.json({ courseId, rules: defaultRules });
+    }
+  
+    res.json({ courseId, rules });
+}));
+
+app.put('/api/admin/module-rules', apiLimiter, validateBody(moduleRulesSchema), asyncHandler(async (req, res) => {
+    requireAdmin(req);
+    const { courseId } = req.query;
+  
+    if (!courseId) {
+    throw new ValidationError('courseId query parameter is required');
+    }
+  
+    await moduleRulesStorage.saveModuleRules(courseId, req.body.rules);
+    setModuleRulesCache(courseId, req.body.rules);
+    res.json({ success: true });
+}));
+
+app.get('/api/admin/statements', apiLimiter, asyncHandler(async (req, res) => {
+    requireAdmin(req);
+    const { courseId, limit, registration } = req.query;
+  
+    if (!courseId) {
+    throw new ValidationError('courseId query parameter is required');
+    }
+  
+    const course = await coursesStorage.getCourseById(courseId);
+    if (!course?.activityId) {
+    throw new NotFoundError('Course activityId');
+    }
+  
+    const safeLimit = Math.min(parseInt(limit || '50', 10) || 50, 200);
+    const result = await xapiLRS.queryStatementsByActivityPrefix(course.activityId, safeLimit, registration || null);
+    res.status(result.status).json(result.data);
+}));
+
+app.post('/api/admin/verbs', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     
     const { verbId, config } = req.body;
     if (!verbId || !config) {
-      return res.status(400).json({ error: 'verbId and config are required' });
+    throw new ValidationError('verbId and config are required');
     }
     
     if (!config.category || !config.action || !config.description) {
-      return res.status(400).json({ error: 'config must include category, action, and description' });
+    throw new ValidationError('config must include category, action, and description');
     }
     
     const verb = await verbTracker.addCustomVerb(verbId, config);
     
-    res.json({ 
-      success: true, 
-      message: `Custom verb ${verbId} added`,
-      verb: verb
-    });
-  } catch (error) {
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+  res.json({ success: true, message: `Custom verb ${verbId} added`, verb });
+}));
 
-// PUT /api/admin/verbs/:verbId - Update custom verb configuration
-// PUT /api/admin/verbs/* - Update custom verb configuration
-// Using wildcard to handle verbIds with slashes (like http://id.tincanapi.com/verb/downloaded)
-app.put('/api/admin/verbs/*', async (req, res) => {
-  try {
+app.put('/api/admin/verbs/*', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     
-    // Extract verbId from the wildcard path (everything after /api/admin/verbs/)
     const verbId = decodeURIComponent(req.params[0] || '');
     const { config } = req.body;
     
     if (!verbId) {
-      return res.status(400).json({ error: 'verbId is required' });
+    throw new ValidationError('verbId is required');
     }
-    
     if (!config) {
-      return res.status(400).json({ error: 'config is required' });
+    throw new ValidationError('config is required');
     }
     
     const verb = await verbTracker.updateCustomVerb(verbId, config);
     
-    res.json({ 
-      success: true, 
-      message: `Custom verb ${verbId} updated`,
-      verb: verb
-    });
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      return res.status(404).json({ error: error.message });
-    }
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
-  }
-});
+  res.json({ success: true, message: `Custom verb ${verbId} updated`, verb });
+}));
 
-// DELETE /api/admin/verbs/* - Remove custom verb configuration
-// Using wildcard to handle verbIds with slashes (like http://id.tincanapi.com/verb/downloaded)
-app.delete('/api/admin/verbs/*', async (req, res) => {
-  try {
+app.delete('/api/admin/verbs/*', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
     
-    // Extract verbId from the wildcard path (everything after /api/admin/verbs/)
     const verbId = decodeURIComponent(req.params[0] || '');
     
     if (!verbId) {
-      return res.status(400).json({ error: 'verbId is required' });
+    throw new ValidationError('verbId is required');
     }
     
     await verbTracker.removeCustomVerb(verbId);
     
-    res.json({ 
-      success: true, 
-      message: `Custom verb ${verbId} removed`
-    });
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      return res.status(404).json({ error: error.message });
-    }
-    const status = error.message.includes('Admin') ? 403 : error.message.includes('Authentication') ? 401 : 500;
-    res.status(status).json({ error: error.message });
+  res.json({ success: true, message: `Custom verb ${verbId} removed` });
+}));
+
+// ============================================================================
+// User Management Routes (Admin Only)
+// ============================================================================
+
+// Get all users (admin only)
+app.get('/api/admin/users', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  
+  const users = await usersStorage.getAllUsers();
+  
+  // Remove sensitive data (password hashes)
+  const safeUsers = users.map(user => ({
+    id: user.id,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    role: user.role,
+    createdAt: user.createdAt,
+    lastLogin: user.lastLogin,
+  }));
+  
+  res.json(safeUsers);
+}));
+
+// Update user role (admin only)
+app.put('/api/admin/users/:userId/role', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  
+  const { userId } = req.params;
+  const { role } = req.body;
+  
+  if (!role || !['admin', 'learner'].includes(role)) {
+    throw new ValidationError('Invalid role. Must be "admin" or "learner"');
   }
-});
+  
+  // Find user by ID
+  const users = await usersStorage.getAllUsers();
+  const user = users.find(u => u.id === userId);
+  
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+  
+  // Prevent demoting the last admin
+  if (user.role === 'admin' && role === 'learner') {
+    const adminCount = users.filter(u => u.role === 'admin').length;
+    if (adminCount <= 1) {
+      throw new ValidationError('Cannot demote the last admin');
+    }
+  }
+  
+  // Update user role
+  await usersStorage.saveUser({ ...user, role });
+  
+  serverLogger.info({ userId, newRole: role }, 'User role updated');
+  res.json({ success: true, message: `User role updated to ${role}` });
+}));
+
+// Delete user (admin only)
+app.delete('/api/admin/users/:userId', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  
+  const { userId } = req.params;
+  const currentUser = verifyAuth(req);
+  
+  // Find user by ID to get email
+  const users = await usersStorage.getAllUsers();
+  const userToDelete = users.find(u => u.id === userId);
+  
+  if (!userToDelete) {
+    throw new NotFoundError('User not found');
+  }
+  
+  // Prevent self-deletion
+  if (userToDelete.email === currentUser.email) {
+    throw new ValidationError('Cannot delete your own account');
+  }
+  
+  // Prevent deleting the last admin
+  if (userToDelete.role === 'admin') {
+    const adminCount = users.filter(u => u.role === 'admin').length;
+    if (adminCount <= 1) {
+      throw new ValidationError('Cannot delete the last admin');
+    }
+  }
+  
+  await usersStorage.deleteUser(userToDelete.email);
+  
+  serverLogger.info({ userId, email: userToDelete.email }, 'User deleted');
+  res.json({ success: true, message: 'User deleted successfully' });
+}));
 
 // ============================================================================
-// Frontend SPA Fallback Route (for client-side routing)
-// This ensures that refreshing on routes like /player/:courseId works
+// Frontend SPA Fallback Route
 // ============================================================================
 
-// Serve frontend static files if dist folder exists (production build)
 const frontendDistPath = path.join(__dirname, '../frontend/dist');
 
-// Check if frontend dist exists synchronously
-fs.access(frontendDistPath)
-  .then(() => {
-    // Serve static assets (JS, CSS, images, etc.)
+// Use synchronous check to ensure routes are registered in correct order
+if (existsSync(frontendDistPath)) {
+  // Debug: Log all requests that might be for static files
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/assets/')) {
+      serverLogger.debug({ path: req.path, distPath: frontendDistPath }, 'Static asset request');
+    }
+    next();
+  });
+  
+  // Serve static assets with long cache (they have hashes in filenames)
+  // But DON'T serve index.html via static - we handle that separately
     app.use(express.static(frontendDistPath, {
-      maxAge: '1y', // Cache static assets for 1 year
-      etag: true
-    }));
-    
-    // Catch-all route: serve index.html for any non-API routes (SPA fallback)
-    // This must be AFTER all API routes to avoid conflicts
+    maxAge: '1y',
+    etag: true,
+    index: false, // Don't serve index.html automatically
+    setHeaders: (res, filePath) => {
+      serverLogger.debug({ filePath }, 'Serving static file');
+      // Never cache index.html (in case it somehow gets served here)
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      }
+    }
+  }));
+  
+  // SPA fallback - serve index.html for all non-API routes
+  // IMPORTANT: Set no-cache headers so browser always gets fresh index.html
     app.get('*', (req, res, next) => {
-      // Skip if it's an API route, course route, xAPI route, or launch route
+    // Skip API and backend routes
       if (req.path.startsWith('/api/') || 
           req.path.startsWith('/course/') || 
           req.path.startsWith('/xapi/') || 
           req.path.startsWith('/launch') ||
           req.path.startsWith('/health')) {
-        return next(); // Let other routes handle it
-      }
-      
-      // For all other routes, serve index.html (SPA fallback)
+      return next();
+    }
+    
+    // Set no-cache headers for index.html
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    
       res.sendFile(path.join(frontendDistPath, 'index.html'), (err) => {
         if (err) {
-          console.error(`[SPA Fallback] Error serving index.html:`, err);
+        serverLogger.error({ error: err.message }, 'Error serving index.html');
           res.status(500).json({ error: 'Failed to serve application' });
         }
       });
     });
     
-    console.log(`✅ Frontend static files served from: ${frontendDistPath}`);
-    console.log(`✅ SPA routing enabled - refresh on any route will work`);
-  })
-  .catch(() => {
-    console.log(`ℹ️  Frontend dist folder not found (${frontendDistPath}). Frontend should be served separately via Vite dev server.`);
-    console.log(`ℹ️  For SPA routing in development, Vite dev server handles this automatically.`);
-  });
+  serverLogger.info({ path: frontendDistPath }, 'Frontend static files served');
+} else {
+  serverLogger.info('Frontend dist folder not found - serve separately via Vite');
+}
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 // ============================================================================
 // Start Server
 // ============================================================================
 
-// Initialize Azure Storage (Tables + Blob) before starting server
 Promise.all([
   initializeTables().catch(err => ({ error: err })),
   blobStorage.initializeBlobStorage().catch(err => ({ error: err }))
@@ -1831,62 +1987,76 @@ Promise.all([
     const blobOk = !blobResult.error;
     
     if (tablesResult.error) {
-      console.error('❌ Failed to initialize Azure Tables:', tablesResult.error.message);
+      serverLogger.error({ error: tablesResult.error.message }, 'Failed to initialize Azure Tables');
     }
     if (blobResult.error) {
-      console.error('❌ Failed to initialize Azure Blob Storage:', blobResult.error.message);
+      serverLogger.error({ error: blobResult.error.message }, 'Failed to initialize Azure Blob Storage');
     }
     
     if (tablesOk) {
-      // Initialize default course if it doesn't exist
       await coursesStorage.initializeDefaultCourse();
-      
-      // Initialize verb tracker (load custom verbs and stats from Azure)
       await verbTracker.initializeVerbTracker().catch(err => {
-        console.error('⚠️  Failed to initialize verb tracker:', err.message);
+        serverLogger.warn({ error: err.message }, 'Failed to initialize verb tracker');
       });
     }
     
+    let storageInfo = 'Azure Storage not configured';
     if (tablesOk && blobOk) {
-      startServer('Azure Storage (Tables + Blob) - Production-ready for 15K+ users');
+      storageInfo = 'Azure Storage (Tables + Blob) - Production-ready';
     } else if (tablesOk) {
-      startServer('⚠️  Azure Tables OK, Blob Storage not configured - course files may not work');
+      storageInfo = 'Azure Tables OK, Blob Storage not configured';
     } else if (blobOk) {
-      startServer('⚠️  Blob Storage OK, Azure Tables not configured - xAPI may not work');
-    } else {
-      console.error('⚠️  Make sure AZURE_STORAGE_ACCOUNT_NAME and AZURE_STORAGE_ACCOUNT_KEY are set in .env');
-      startServer('⚠️  Azure Storage not configured - features may not work');
+      storageInfo = 'Blob Storage OK, Azure Tables not configured';
     }
+    
+    startServer(storageInfo);
   });
 
 function startServer(storageInfo) {
-  const HOST = process.env.HOST || '0.0.0.0'; // Bind to all interfaces for network access
+  const HOST = process.env.HOST || '0.0.0.0';
+  const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '10000', 10);
+  
   const server = app.listen(PORT, HOST, () => {
+    serverLogger.info({
+      host: HOST,
+      port: PORT,
+      storage: storageInfo,
+      env: process.env.NODE_ENV || 'development'
+    }, 'Server started');
+    
     console.log(`\n🚀 Storyline LMS Backend running on http://${HOST}:${PORT}`);
-    console.log(`   Local:   http://localhost:${PORT}`);
-    console.log(`   Network: http://<your-ip>:${PORT}`);
     console.log(`📚 Course files served from: /course`);
     console.log(`🔐 Auth endpoints: /api/auth/*`);
     console.log(`📊 xAPI LRS endpoint: ${BASE_URL}/xapi`);
-    console.log(`🎯 Launch course: ${BASE_URL}/launch?token=YOUR_TOKEN`);
     console.log(`💾 Storage: ${storageInfo}\n`);
   });
 
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`\n❌ Port ${PORT} is already in use!`);
-      console.error(`\n💡 Solutions:`);
-      console.error(`   1. Kill the process using port ${PORT}:`);
-      console.error(`      Windows: netstat -ano | findstr :${PORT} then taskkill /PID <PID> /F`);
-      console.error(`      Linux/Mac: lsof -ti:${PORT} | xargs kill -9`);
-      console.error(`   2. Use a different port by setting PORT environment variable:`);
-      console.error(`      PORT=3001 npm run dev`);
-      console.error(`   3. Check if another instance is running and stop it`);
+      serverLogger.fatal({ port: PORT }, 'Port already in use');
       process.exit(1);
     } else {
-      console.error('Server error:', err);
+      serverLogger.fatal({ error: err.message }, 'Server error');
       process.exit(1);
     }
   });
+  
+  // Graceful shutdown handler
+  const gracefulShutdown = (signal) => {
+    serverLogger.info({ signal }, 'Shutdown signal received, closing server gracefully');
+    
+    server.close(() => {
+      serverLogger.info('HTTP server closed');
+      process.exit(0);
+    });
+    
+    // Force shutdown if graceful close takes too long
+    setTimeout(() => {
+      serverLogger.warn({ timeout: SHUTDOWN_TIMEOUT_MS }, 'Forcing shutdown after timeout');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+  };
+  
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
-

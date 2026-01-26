@@ -1,8 +1,10 @@
 import { useEffect, useState, useMemo } from "react";
 import { Helmet } from "react-helmet-async";
-import { BookOpen, Users, UserPlus, Trophy } from "lucide-react";
+import { motion } from "framer-motion";
+import { BookOpen, Users, UserPlus, Trophy, BarChart3 } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import api from "../services/api";
 import { getUser } from "../services/auth";
@@ -44,9 +46,29 @@ interface LearnerProgress {
   completedAt?: string;
 }
 
+interface Attempt {
+  registrationId: string;
+  userEmail: string;
+  userName?: string;
+  courseId: string;
+  courseTitle?: string;
+  completionStatus?: string;
+  completionVerb?: string;
+  completionStatementId?: string;
+  score?: number;
+  success?: boolean | null;
+  progressPercent?: number | null;
+  timeSpent?: number;
+  launchedAt?: string;
+  completedAt?: string;
+  eligibleForRaise?: boolean | null;
+}
+
 export default function AdminDashboard() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [progress, setProgress] = useState<LearnerProgress[]>([]);
+  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [attemptPage, setAttemptPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const user = getUser();
@@ -58,12 +80,14 @@ export default function AdminDashboard() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [coursesResponse, progressResponse] = await Promise.all([
+      const [coursesResponse, progressResponse, attemptsResponse] = await Promise.all([
         api.get('/api/admin/courses'),
-        api.get('/api/admin/progress')
+        api.get('/api/admin/progress'),
+        api.get('/api/admin/attempts')
       ]);
       setCourses(coursesResponse.data);
       setProgress(progressResponse.data);
+      setAttempts(attemptsResponse.data);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to load dashboard data');
       toast.error(err.response?.data?.error || 'Failed to load dashboard data');
@@ -204,6 +228,19 @@ export default function AdminDashboard() {
   }, [courses, progress]);
 
   const COLORS = ['#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#06b6d4'];
+  const formatDate = (value?: string) => value ? new Date(value).toLocaleDateString('en-US') : '—';
+  const attemptsPerPage = 25;
+  const attemptPageCount = Math.max(1, Math.ceil(attempts.length / attemptsPerPage));
+  const pagedAttempts = useMemo(() => {
+    const start = (attemptPage - 1) * attemptsPerPage;
+    return attempts.slice(start, start + attemptsPerPage);
+  }, [attempts, attemptPage]);
+
+  useEffect(() => {
+    if (attemptPage > attemptPageCount) {
+      setAttemptPage(1);
+    }
+  }, [attempts, attemptPage, attemptPageCount]);
 
   if (!user?.isAdmin) {
     return (
@@ -224,146 +261,173 @@ export default function AdminDashboard() {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        <div className="px-8 py-6 border-b border-border/50 glass shadow-glass">
-          <h1 className="text-3xl font-bold text-foreground">Admin Dashboard</h1>
-          <p className="text-muted-foreground mt-1">Overview of your learning management system</p>
-        </div>
+        {/* Header Section */}
+        <motion.header
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="border-b border-border bg-card/50 backdrop-blur-sm"
+        >
+          <div className="px-8 py-8">
+            <div className="mb-6">
+              <h1 className="text-5xl lg:text-6xl font-serif font-bold text-foreground tracking-tight mb-4 flex items-center gap-3">
+                <div 
+                  className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                  style={{
+                    background: 'linear-gradient(135deg, #FF6B9D, #C44569)'
+                  }}
+                >
+                  <BarChart3 className="h-6 w-6 text-white" />
+                </div>
+                Admin Dashboard
+              </h1>
+              <p className="text-muted-foreground text-lg font-serif">Overview of your learning management system</p>
+            </div>
+          </div>
+        </motion.header>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="p-8">
+          <div className="macro-padding pb-24">
             {error && (
-              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20">
+              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20 text-lg font-serif">
                 {error}
               </div>
             )}
 
             {loading ? (
               <div className="text-center py-16">
-                <p className="text-muted-foreground">Loading dashboard data...</p>
+                <div className="inline-flex items-center gap-2 text-muted-foreground">
+                  <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-lg font-serif">Loading dashboard data...</p>
+                </div>
               </div>
             ) : (
               <>
                 {/* Statistics Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-16">
                   {/* Total Courses */}
-                  <Card>
-                    <CardContent className="p-6">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-muted-foreground">Total Courses</p>
-                          <p className="text-3xl font-bold text-foreground mt-2">{courses.length}</p>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    whileHover={{ y: -4, scale: 1.02 }}
+                  >
+                    <Card className="bg-muted/40 border-border shadow-sm hover:shadow-md transition-all duration-300">
+                      <CardContent className="p-6">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Total Courses</p>
+                            <p className="text-4xl font-serif font-bold text-foreground">{courses.length}</p>
+                          </div>
+                          <div 
+                            className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                            style={{
+                              background: 'linear-gradient(135deg, #FF6B9D, #C44569, #8B5FBF)'
+                            }}
+                          >
+                            <BookOpen className="h-6 w-6 text-white" />
+                          </div>
                         </div>
-                        <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-                          <BookOpen className="h-6 w-6 text-primary" />
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
 
                   {/* Total Learners */}
-                  <Card>
-                    <CardContent className="p-6">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-muted-foreground">Total Learners</p>
-                          <p className="text-3xl font-bold text-foreground mt-2">
-                            {new Set(progress.map(p => p.userId)).size}
-                          </p>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    whileHover={{ y: -4, scale: 1.02 }}
+                  >
+                    <Card className="bg-muted/40 border-border shadow-sm hover:shadow-md transition-all duration-300">
+                      <CardContent className="p-6">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Total Learners</p>
+                            <p className="text-4xl font-serif font-bold text-foreground">
+                              {new Set(progress.map(p => p.userId)).size}
+                            </p>
+                          </div>
+                          <div 
+                            className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                            style={{
+                              background: 'linear-gradient(135deg, #4ECDC4, #44A08D)'
+                            }}
+                          >
+                            <Users className="h-6 w-6 text-white" />
+                          </div>
                         </div>
-                        <div className="h-12 w-12 rounded-full bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
-                          <Users className="h-6 w-6 text-blue-600 dark:text-blue-400" />
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
 
                   {/* Total Enrollments */}
-                  <Card>
-                    <CardContent className="p-6">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-muted-foreground">Total Enrollments</p>
-                          <p className="text-3xl font-bold text-foreground mt-2">
-                            {progress.filter(p => p.enrollmentStatus === 'enrolled' || p.enrollmentStatus === 'in_progress').length}
-                          </p>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    whileHover={{ y: -4, scale: 1.02 }}
+                  >
+                    <Card className="bg-muted/40 border-border shadow-sm hover:shadow-md transition-all duration-300">
+                      <CardContent className="p-6">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Total Enrollments</p>
+                            <p className="text-4xl font-serif font-bold text-foreground">
+                              {progress.filter(p => p.enrollmentStatus === 'enrolled' || p.enrollmentStatus === 'in_progress').length}
+                            </p>
+                          </div>
+                          <div 
+                            className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                            style={{
+                              background: 'linear-gradient(135deg, #8B5FBF, #C44569)'
+                            }}
+                          >
+                            <UserPlus className="h-6 w-6 text-white" />
+                          </div>
                         </div>
-                        <div className="h-12 w-12 rounded-full bg-accent/10 flex items-center justify-center">
-                          <UserPlus className="h-6 w-6 text-accent" />
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
 
                   {/* Total Completions */}
-                  <Card>
-                    <CardContent className="p-6">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-muted-foreground">Total Completions</p>
-                          <p className="text-3xl font-bold text-foreground mt-2">
-                            {progress.filter(p => p.completionStatus === 'completed' || p.completionStatus === 'passed').length}
-                          </p>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.4 }}
+                    whileHover={{ y: -4, scale: 1.02 }}
+                  >
+                    <Card className="bg-muted/40 border-border shadow-sm hover:shadow-md transition-all duration-300">
+                      <CardContent className="p-6">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Total Completions</p>
+                            <p className="text-4xl font-serif font-bold text-foreground">
+                              {progress.filter(p => p.completionStatus === 'completed' || p.completionStatus === 'passed').length}
+                            </p>
+                          </div>
+                          <div 
+                            className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                            style={{
+                              background: 'linear-gradient(135deg, #4ECDC4, #44A08D)'
+                            }}
+                          >
+                            <Trophy className="h-6 w-6 text-white" />
+                          </div>
                         </div>
-                        <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/20 flex items-center justify-center">
-                          <Trophy className="h-6 w-6 text-green-600 dark:text-green-400" />
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                {/* Additional Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                  {/* Active Learners */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">Active Learners</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-3xl font-bold text-foreground">
-                        {progress.filter(p => p.completionStatus === 'in_progress').length}
-                      </p>
-                      <p className="text-sm text-muted-foreground mt-2">Currently taking courses</p>
-                    </CardContent>
-                  </Card>
-
-                  {/* Completion Rate */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">Completion Rate</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-3xl font-bold text-foreground">
-                        {progress.length > 0 
-                          ? Math.round((progress.filter(p => p.completionStatus === 'completed' || p.completionStatus === 'passed').length / progress.length) * 100)
-                          : 0}%
-                      </p>
-                      <p className="text-sm text-muted-foreground mt-2">Average completion rate</p>
-                    </CardContent>
-                  </Card>
-
-                  {/* Total Time Spent */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">Total Learning Time</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-3xl font-bold text-foreground">
-                        {Math.round(progress.reduce((acc, p) => acc + (p.timeSpent || 0), 0) / 3600)}h
-                      </p>
-                      <p className="text-sm text-muted-foreground mt-2">Hours of learning</p>
-                    </CardContent>
-                  </Card>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
                 </div>
 
                 {/* Charts Section */}
                 {chartData.courseData.length > 0 ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-16">
                     {/* Course Enrollment Comparison */}
-                    <Card>
+                    <Card className="bg-muted/40 border-border">
                       <CardHeader>
-                        <CardTitle>Course Enrollment</CardTitle>
-                        <CardDescription>Number of learners enrolled per course</CardDescription>
+                        <CardTitle className="text-xl font-serif font-semibold">Course Enrollment</CardTitle>
+                        <CardDescription className="font-serif">Number of learners enrolled per course</CardDescription>
                       </CardHeader>
                       <CardContent>
                         <ResponsiveContainer width="100%" height={300}>
@@ -400,10 +464,10 @@ export default function AdminDashboard() {
                   </Card>
 
                   {/* Completion Rate by Course */}
-                  <Card>
+                  <Card className="bg-muted/40 border-border">
                     <CardHeader>
-                      <CardTitle>Completion Rate by Course</CardTitle>
-                      <CardDescription>Percentage of enrolled learners who completed</CardDescription>
+                      <CardTitle className="text-xl font-serif font-semibold">Completion Rate by Course</CardTitle>
+                      <CardDescription className="font-serif">Percentage of enrolled learners who completed</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
@@ -439,10 +503,10 @@ export default function AdminDashboard() {
                   </Card>
 
                   {/* Enrollment Status Distribution */}
-                  <Card>
+                  <Card className="bg-muted/40 border-border">
                     <CardHeader>
-                      <CardTitle>Enrollment Status Distribution</CardTitle>
-                      <CardDescription>Breakdown of learner enrollment status</CardDescription>
+                      <CardTitle className="text-xl font-serif font-semibold">Enrollment Status Distribution</CardTitle>
+                      <CardDescription className="font-serif">Breakdown of learner enrollment status</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
@@ -468,10 +532,10 @@ export default function AdminDashboard() {
                   </Card>
 
                   {/* Progress Distribution */}
-                  <Card>
+                  <Card className="bg-muted/40 border-border">
                     <CardHeader>
-                      <CardTitle>Progress Distribution</CardTitle>
-                      <CardDescription>Distribution of learners by progress percentage</CardDescription>
+                      <CardTitle className="text-xl font-serif font-semibold">Progress Distribution</CardTitle>
+                      <CardDescription className="font-serif">Distribution of learners by progress percentage</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
@@ -497,10 +561,10 @@ export default function AdminDashboard() {
                   </Card>
 
                   {/* Enrollment & Completion Trends */}
-                  <Card className="lg:col-span-2">
+                  <Card className="lg:col-span-2 bg-muted/40 border-border">
                     <CardHeader>
-                      <CardTitle>Enrollment & Completion Trends</CardTitle>
-                      <CardDescription>Monthly enrollment and completion trends over time</CardDescription>
+                      <CardTitle className="text-xl font-serif font-semibold">Enrollment & Completion Trends</CardTitle>
+                      <CardDescription className="font-serif">Monthly enrollment and completion trends over time</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
@@ -534,10 +598,10 @@ export default function AdminDashboard() {
                   </Card>
 
                   {/* Average Time Spent by Course */}
-                  <Card className="lg:col-span-2">
+                  <Card className="lg:col-span-2 bg-muted/40 border-border">
                     <CardHeader>
-                      <CardTitle>Average Time Spent by Course</CardTitle>
-                      <CardDescription>Average learning time (minutes) per course</CardDescription>
+                      <CardTitle className="text-xl font-serif font-semibold">Average Time Spent by Course</CardTitle>
+                      <CardDescription className="font-serif">Average learning time (minutes) per course</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
@@ -575,18 +639,18 @@ export default function AdminDashboard() {
                   </Card>
                   </div>
                 ) : (
-                  <Card className="mb-8">
+                  <Card className="mb-16 bg-muted/40 border-border">
                     <CardContent className="p-12 text-center">
-                      <p className="text-muted-foreground">No data available for charts. Create courses and enroll learners to see analytics.</p>
+                      <p className="text-lg text-muted-foreground font-serif">No data available for charts. Create courses and enroll learners to see analytics.</p>
                     </CardContent>
                   </Card>
                 )}
 
                 {/* Course Statistics Table */}
-                <Card>
+                <Card className="bg-muted/40 border-border">
                   <CardHeader>
-                    <CardTitle>Course Statistics</CardTitle>
-                    <CardDescription>Detailed overview of enrollment and completion by course</CardDescription>
+                    <CardTitle className="text-xl font-serif font-semibold">Course Statistics</CardTitle>
+                    <CardDescription className="font-serif">Detailed overview of enrollment and completion by course</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <Table>
@@ -622,6 +686,80 @@ export default function AdminDashboard() {
                         )}
                       </TableBody>
                     </Table>
+                  </CardContent>
+                </Card>
+
+                {/* Attempt Audit Table */}
+                <Card className="bg-muted/40 border-border mt-10">
+                  <CardHeader>
+                    <CardTitle className="text-xl font-serif font-semibold">Attempt Audit Trail</CardTitle>
+                    <CardDescription className="font-serif">Registration-level completion evidence for payroll accuracy</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Learner</TableHead>
+                          <TableHead>Course</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Score</TableHead>
+                          <TableHead>Success</TableHead>
+                          <TableHead>Eligible</TableHead>
+                          <TableHead>Completed</TableHead>
+                          <TableHead>Registration</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {pagedAttempts.map((attempt) => (
+                          <TableRow key={attempt.registrationId}>
+                            <TableCell className="font-medium">
+                              {attempt.userName || attempt.userEmail}
+                            </TableCell>
+                            <TableCell>{attempt.courseTitle || attempt.courseId}</TableCell>
+                            <TableCell>{attempt.completionStatus || '—'}</TableCell>
+                            <TableCell>{attempt.score ?? '—'}</TableCell>
+                            <TableCell>
+                              {typeof attempt.success === 'boolean' ? (attempt.success ? 'Yes' : 'No') : '—'}
+                            </TableCell>
+                            <TableCell>
+                              {attempt.eligibleForRaise === true ? 'Yes' : attempt.eligibleForRaise === false ? 'No' : '—'}
+                            </TableCell>
+                            <TableCell>{formatDate(attempt.completedAt)}</TableCell>
+                            <TableCell className="font-mono text-xs">{attempt.registrationId}</TableCell>
+                          </TableRow>
+                        ))}
+                        {attempts.length === 0 && (
+                          <TableRow>
+                            <TableCell colSpan={8} className="text-center text-muted-foreground">
+                              No attempt data available
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                    {attempts.length > attemptsPerPage && (
+                      <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
+                        <span>Page {attemptPage} of {attemptPageCount}</span>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setAttemptPage(prev => Math.max(1, prev - 1))}
+                            disabled={attemptPage === 1}
+                          >
+                            Prev
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setAttemptPage(prev => Math.min(attemptPageCount, prev + 1))}
+                            disabled={attemptPage === attemptPageCount}
+                          >
+                            Next
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </>

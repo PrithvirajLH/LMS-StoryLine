@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import api from "../services/api";
-import { getToken } from "../services/auth";
+import { getToken, getUser } from "../services/auth";
 import { useCurrentCourse } from "@/contexts/CurrentCourseContext";
 
 const CoursePlayer = () => {
@@ -31,20 +31,17 @@ const CoursePlayer = () => {
         setCourse(response.data.course);
         setLaunchUrl(response.data.launchUrl);
         // Get progressPercent from database (preferred) or fallback to score
-        if (response.data.course?.progressPercent !== undefined) {
-          setProgress(response.data.course.progressPercent);
-        } else if (response.data.course?.score) {
-          setProgress(response.data.course.score);
-        } else {
-          setProgress(0);
-        }
+        const initialProgress = response.data.course?.progressPercent !== undefined
+          ? response.data.course.progressPercent
+          : response.data.course?.score || 0;
+        setProgress(initialProgress);
         
         // Update current course context for NowBar
         if (response.data.course) {
           setCurrentCourse({
             courseId: response.data.course.courseId || courseId || '',
             title: response.data.course.title || '',
-            progress: response.data.course.progressPercent || response.data.course.score || 0,
+            progress: initialProgress,
           });
         }
       } catch (err: any) {
@@ -65,6 +62,50 @@ const CoursePlayer = () => {
 
     launchCourse();
   }, [courseId, setCurrentCourse]);
+
+  // Poll for progress updates every 5 seconds while course is active
+  useEffect(() => {
+    if (!courseId || !course || loading) return;
+
+    const user = getUser();
+    const userId = user?.email || user?.userId;
+    if (!userId) return;
+
+    const updateProgress = async () => {
+      try {
+        const response = await api.get(`/api/users/${encodeURIComponent(userId)}/courses`);
+        const coursesData = Array.isArray(response.data) ? response.data : [];
+        const currentCourseData = coursesData.find((c: any) => c.courseId === courseId);
+        
+        if (currentCourseData) {
+          const newProgress = currentCourseData.progressPercent !== undefined
+            ? currentCourseData.progressPercent
+            : currentCourseData.score || 0;
+          
+          // Only update if progress changed (avoid unnecessary re-renders)
+          if (Math.abs(newProgress - progress) > 0.1) {
+            setProgress(newProgress);
+            
+            // Update current course context for NowBar
+            setCurrentCourse({
+              courseId: currentCourseData.courseId || courseId || '',
+              title: currentCourseData.title || course.title || '',
+              progress: newProgress,
+            });
+          }
+        }
+      } catch (err) {
+        // Silently fail - don't interrupt course experience
+        console.debug('Progress update failed:', err);
+      }
+    };
+
+    // Update immediately, then every 5 seconds
+    updateProgress();
+    const interval = setInterval(updateProgress, 5000);
+
+    return () => clearInterval(interval);
+  }, [courseId, course, loading, progress, setCurrentCourse]);
 
   // Cleanup on unmount - must be before any early returns
   useEffect(() => {
@@ -203,60 +244,98 @@ const CoursePlayer = () => {
             transition={{ duration: 0.2 }}
             style={{ display: isSidebarCollapsed ? 'none' : 'block' }}
           >
-            {/* Exit Button */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => navigate("/courses")}
-              className="mb-4 text-foreground/70 hover:text-foreground"
-            >
-              <ArrowLeft className="h-3 w-3 mr-1.5" />
-              <span className="text-xs">Exit</span>
-            </Button>
+            {loading || !course ? (
+              /* Loading State */
+              <div className="flex flex-col h-full">
+                {/* Exit Button Skeleton */}
+                <div className="mb-4 h-8 w-20 bg-muted/50 rounded animate-pulse" />
 
-            {/* Course Title - Editorial Serif */}
-            <h1 className="text-xl lg:text-2xl font-serif font-bold mb-6 leading-tight tracking-tight line-clamp-3">
-              {course.title}
-            </h1>
+                {/* Course Title Skeleton */}
+                <div className="mb-6 space-y-2">
+                  <div className="h-6 bg-muted/50 rounded animate-pulse" />
+                  <div className="h-6 bg-muted/50 rounded animate-pulse w-3/4" />
+                </div>
 
-            {/* Progress Stats - Big Serif Numbers */}
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs text-muted-foreground mb-1.5 uppercase tracking-wider">Progress</p>
-                <p className="text-4xl font-serif font-bold text-foreground">{Math.round(progress)}</p>
-                <p className="text-sm text-muted-foreground mt-0.5">percent complete</p>
+                {/* Progress Stats Skeleton */}
+                <div className="space-y-4">
+                  <div>
+                    <div className="h-3 w-20 bg-muted/50 rounded animate-pulse mb-1.5" />
+                    <div className="h-12 bg-muted/50 rounded animate-pulse mb-1" />
+                    <div className="h-4 w-32 bg-muted/50 rounded animate-pulse" />
+                  </div>
+
+                  {/* Status Skeleton */}
+                  <div className="pt-4 border-t border-border">
+                    <div className="h-3 w-16 bg-muted/50 rounded animate-pulse mb-2" />
+                    <div className="h-6 w-24 bg-muted/50 rounded animate-pulse" />
+                  </div>
+                </div>
+
+                {/* Loading Indicator */}
+                <div className="mt-auto pt-6 flex flex-col items-center justify-center space-y-3">
+                  <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-muted-foreground text-center">Loading course...</p>
+                </div>
               </div>
+            ) : (
+              /* Course Content */
+              <>
+                {/* Exit Button */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => navigate("/courses")}
+                  className="mb-4 text-foreground/70 hover:text-foreground"
+                >
+                  <ArrowLeft className="h-3 w-3 mr-1.5" />
+                  <span className="text-xs">Exit</span>
+                </Button>
 
-              {/* Additional Stats */}
-              <div className="pt-4 border-t border-border">
-                <p className="text-xs text-muted-foreground mb-2 uppercase tracking-wider">Status</p>
-                <p className="text-lg font-serif font-semibold text-foreground">
-                  {progress === 100 ? 'Completed' : progress > 0 ? 'In Progress' : 'Not Started'}
-                </p>
-              </div>
-            </div>
+                {/* Course Title - Editorial Serif */}
+                <h1 className="text-xl lg:text-2xl font-serif font-bold mb-6 leading-tight tracking-tight line-clamp-3">
+                  {course.title}
+                </h1>
 
-            {/* Controls */}
-            <div className="mt-auto pt-6 space-y-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={toggleFullscreen}
-                className="w-full glass-sm text-xs"
-              >
-                {isFullscreen ? (
-                  <>
-                    <Minimize2 className="h-3 w-3 mr-1.5" />
-                    Exit Fullscreen
-                  </>
-                ) : (
-                  <>
-                    <Maximize2 className="h-3 w-3 mr-1.5" />
-                    Enter Fullscreen
-                  </>
-                )}
-              </Button>
-            </div>
+                {/* Progress Stats - Big Serif Numbers */}
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1.5 uppercase tracking-wider">Progress</p>
+                    <p className="text-4xl font-serif font-bold text-foreground">{Math.round(progress)}</p>
+                    <p className="text-sm text-muted-foreground mt-0.5">percent complete</p>
+                  </div>
+
+                  {/* Additional Stats */}
+                  <div className="pt-4 border-t border-border">
+                    <p className="text-xs text-muted-foreground mb-2 uppercase tracking-wider">Status</p>
+                    <p className="text-lg font-serif font-semibold text-foreground">
+                      {progress === 100 ? 'Completed' : progress > 0 ? 'In Progress' : 'Not Started'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Controls */}
+                <div className="mt-auto pt-6 space-y-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={toggleFullscreen}
+                    className="w-full glass-sm text-xs"
+                  >
+                    {isFullscreen ? (
+                      <>
+                        <Minimize2 className="h-3 w-3 mr-1.5" />
+                        Exit Fullscreen
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="h-3 w-3 mr-1.5" />
+                        Enter Fullscreen
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
           </motion.div>
         </motion.aside>
         

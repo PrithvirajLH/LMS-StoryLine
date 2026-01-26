@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Helmet } from "react-helmet-async";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Filter } from "lucide-react";
+import { Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -29,12 +29,9 @@ interface Course {
   level?: string;
 }
 
-type FilterType = "all" | "my";
-
 const Courses = () => {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
-  const [filter, setFilter] = useState<FilterType>("all");
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -60,8 +57,8 @@ const Courses = () => {
     navigate(`/player/${courseId}`);
   };
 
-  const handleEnroll = async (courseId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleEnroll = async (courseId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     try {
       await api.post(`/api/courses/${courseId}/launch`);
       loadCourses();
@@ -85,23 +82,40 @@ const Courses = () => {
         : isCompleted
         ? 100
         : 0;
+    const isInProgress = isEnrolled && !isCompleted && progress > 0 && progress < 100;
 
-    return { ...course, isEnrolled, isCompleted, progress };
+    return { ...course, isEnrolled, isCompleted, isInProgress, progress };
   });
 
-  // Filter courses
+  // Filter courses by search
   const filteredCourses = processedCourses.filter((course) => {
-    // My Courses filter
-    if (filter === "my" && !course.isEnrolled && !course.isCompleted) {
-      return false;
-    }
-
     // Search filter
     const matchesSearch =
       course.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       course.description?.toLowerCase().includes(searchQuery.toLowerCase());
 
     return matchesSearch;
+  });
+
+  // Sort courses: Not Enrolled -> Enrolled -> In Progress -> Completed
+  const sortedCourses = [...filteredCourses].sort((a, b) => {
+    // Priority: 1 = Not Enrolled, 2 = Enrolled, 3 = In Progress, 4 = Completed
+    const getPriority = (course: typeof a) => {
+      if (course.isCompleted) return 4;
+      if (course.isInProgress) return 3;
+      if (course.isEnrolled) return 2;
+      return 1;
+    };
+
+    const priorityA = getPriority(a);
+    const priorityB = getPriority(b);
+
+    if (priorityA !== priorityB) {
+      return priorityA - priorityB;
+    }
+
+    // If same priority, sort alphabetically by title
+    return a.title.localeCompare(b.title);
   });
 
   return (
@@ -146,30 +160,6 @@ const Courses = () => {
                   />
                 </div>
               </div>
-
-              {/* Toggle */}
-              <div className="flex items-center gap-1 rounded-lg border border-border p-1 bg-background">
-                <button
-                  onClick={() => setFilter("all")}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
-                    filter === "all"
-                      ? "bg-foreground text-background shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  All Courses
-                </button>
-                <button
-                  onClick={() => setFilter("my")}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
-                    filter === "my"
-                      ? "bg-foreground text-background shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  My Courses
-                </button>
-              </div>
             </div>
           </div>
         </motion.header>
@@ -188,7 +178,7 @@ const Courses = () => {
               </motion.div>
             )}
 
-            {/* Course Gallery - Horizontal Scroll */}
+            {/* Course Gallery */}
             {loading ? (
               <div className="text-center py-20">
                 <div className="inline-flex items-center gap-3 text-muted-foreground">
@@ -196,10 +186,10 @@ const Courses = () => {
                   <p className="text-sm font-medium">Loading courses...</p>
                 </div>
               </div>
-            ) : filteredCourses.length > 0 ? (
+            ) : sortedCourses.length > 0 ? (
               <CourseGallery
-                courses={filteredCourses}
-                onEnroll={(courseId) => handleEnroll(courseId, {} as React.MouseEvent)}
+                courses={sortedCourses}
+                onEnroll={(courseId) => handleEnroll(courseId)}
               />
             ) : (
               <motion.div
@@ -208,11 +198,7 @@ const Courses = () => {
                 className="text-center py-20"
               >
                 <p className="text-muted-foreground text-lg mb-4">
-                  {filter === "my"
-                    ? searchQuery
-                      ? "No enrolled courses found matching your search"
-                      : "You haven't enrolled in any courses yet"
-                    : searchQuery
+                  {searchQuery
                     ? "No courses found matching your search"
                     : "No courses available"}
                 </p>

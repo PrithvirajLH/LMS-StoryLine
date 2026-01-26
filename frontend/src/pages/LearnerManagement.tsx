@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
+import { motion } from "framer-motion";
 import { Users, Clock, CheckCircle2, XCircle, AlertCircle, Search, Filter, Award } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -197,19 +198,31 @@ export default function LearnerManagement() {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        <div className="px-8 py-6 border-b border-border/50 glass shadow-glass">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-3xl font-bold text-foreground flex items-center gap-2">
-                <Users className="h-8 w-8" />
+        {/* Header Section */}
+        <motion.header
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="border-b border-border bg-card/50 backdrop-blur-sm"
+        >
+          <div className="px-8 py-8">
+            <div className="mb-6">
+              <h1 className="text-5xl lg:text-6xl font-serif font-bold text-foreground tracking-tight mb-4 flex items-center gap-3">
+                <div 
+                  className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
+                  style={{
+                    background: 'linear-gradient(135deg, #4ECDC4, #44A08D)'
+                  }}
+                >
+                  <Users className="h-6 w-6 text-white" />
+                </div>
                 Learner Management
               </h1>
-              <p className="text-muted-foreground mt-1">Track learner progress and enrollments across all courses</p>
+              <p className="text-muted-foreground text-lg font-serif">Track learner progress and enrollments across all courses</p>
             </div>
-          </div>
-          
-          {/* Filters and Search */}
-          <div className="flex items-center gap-4 flex-wrap">
+            
+            {/* Filters and Search */}
+            <div className="flex items-center gap-4 flex-wrap">
             <div className="relative flex-1 min-w-[300px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
@@ -251,27 +264,30 @@ export default function LearnerManagement() {
                 {filteredProgress.length} {filteredProgress.length === 1 ? 'learner' : 'learners'} found
               </div>
             )}
+            </div>
           </div>
-        </div>
+        </motion.header>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="p-8">
+          <div className="macro-padding pb-24">
             {error && (
-              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20">
+              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20 text-lg font-serif">
                 {error}
               </div>
             )}
 
             {loading ? (
               <div className="text-center py-16">
-                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-4"></div>
-                <p className="text-muted-foreground">Loading learner data...</p>
+                <div className="inline-flex items-center gap-2 text-muted-foreground">
+                  <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-lg font-serif">Loading learner data...</p>
+                </div>
               </div>
             ) : filteredProgress.length === 0 ? (
-              <Card className="border-2 border-black shadow-lg">
+              <Card className="bg-muted/40 border-border shadow-lg">
                 <CardContent className="p-12 text-center">
                   <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4 opacity-50" />
-                  <p className="text-muted-foreground text-lg">
+                  <p className="text-muted-foreground text-lg font-serif">
                     {searchQuery || selectedCourseId !== 'all' || filterCompleted
                       ? 'No learners found matching your filters.' 
                       : 'No learner progress data available.'}
@@ -291,13 +307,13 @@ export default function LearnerManagement() {
                 </CardContent>
               </Card>
             ) : (
-              <Card className="border-2 border-black shadow-lg">
-                <CardHeader className="bg-black text-white rounded-t-lg">
-                  <CardTitle className="text-white flex items-center gap-2">
+              <Card className="bg-muted/40 border-border shadow-lg">
+                <CardHeader>
+                  <CardTitle className="text-xl font-serif font-semibold flex items-center gap-2">
                     <Users className="h-5 w-5" />
                     Learner Progress ({filteredProgress.length})
                   </CardTitle>
-                  <CardDescription className="text-gray-300">
+                  <CardDescription className="font-serif">
                     Detailed view of all learner enrollments and progress
                   </CardDescription>
                 </CardHeader>

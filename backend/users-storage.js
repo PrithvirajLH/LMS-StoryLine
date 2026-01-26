@@ -3,10 +3,28 @@
  * Production-grade user management for 15,000+ employees
  */
 
-import { getTableClient, retryOperation, TABLES } from './azure-tables.js';
+// Load environment variables (required for ES modules)
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { getTableClient, retryOperation, TABLES, sanitizeODataValue, buildODataEqFilter } from './azure-tables.js';
 import bcrypt from 'bcrypt';
+import { storageLogger as logger } from './logger.js';
 
 const USERS_TABLE = 'Users';
+
+// ============================================================================
+// Default Admin Configuration - Use Environment Variables
+// ============================================================================
+
+const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL || 'admin@example.com';
+const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD;
+const DEFAULT_ADMIN_NAME = process.env.DEFAULT_ADMIN_NAME || 'Admin User';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// ============================================================================
+// Table Initialization
+// ============================================================================
 
 /**
  * Initialize users table
@@ -15,20 +33,28 @@ export async function initializeUsersTable() {
   try {
     const client = getTableClient('USERS');
     // Table will be created automatically on first use
-    console.log(`✓ Users table '${TABLES.USERS}' ready`);
+    logger.info({ table: TABLES.USERS }, 'Users table ready');
   } catch (error) {
-    console.error(`[Users Storage] Error initializing table:`, error);
+    logger.error({ error: error.message }, 'Error initializing users table');
     throw error;
   }
 }
+
+// ============================================================================
+// User CRUD Operations
+// ============================================================================
 
 /**
  * Get user by email
  */
 export async function getUserByEmail(email) {
+  if (!email) {
+    return null;
+  }
+  
   const client = getTableClient('USERS');
   const partitionKey = 'user'; // Single partition for all users
-  const rowKey = email.toLowerCase(); // Use email as row key (normalized to lowercase)
+  const rowKey = email.toLowerCase().trim(); // Use email as row key (normalized to lowercase)
   
   try {
     const entity = await client.getEntity(partitionKey, rowKey);
@@ -56,13 +82,18 @@ export async function getUserByEmail(email) {
  * Get user by ID
  */
 export async function getUserById(userId) {
+  if (!userId) {
+    return null;
+  }
+  
   const client = getTableClient('USERS');
-  const partitionKey = 'user';
   
   try {
-    // Query by userId field (since rowKey is email)
+    // Build safe OData filter using sanitization
+    const filter = buildODataEqFilter('userId', userId);
+    
     const iterator = client.listEntities({
-      queryOptions: { filter: `userId eq '${userId}'` }
+      queryOptions: { filter }
     });
     
     for await (const entity of iterator) {
@@ -82,7 +113,7 @@ export async function getUserById(userId) {
     
     return null;
   } catch (error) {
-    console.error('[Users Storage] Error getting user by ID:', error);
+    logger.error({ userId, error: error.message }, 'Error getting user by ID');
     return null;
   }
 }
@@ -91,9 +122,13 @@ export async function getUserById(userId) {
  * Create or update user
  */
 export async function saveUser(user) {
+  if (!user || !user.email) {
+    throw new Error('User email is required');
+  }
+  
   const client = getTableClient('USERS');
   const partitionKey = 'user';
-  const rowKey = user.email.toLowerCase(); // Normalize email to lowercase
+  const rowKey = user.email.toLowerCase().trim(); // Normalize email to lowercase
   
   // Generate userId if not provided
   if (!user.userId && !user.id) {
@@ -115,10 +150,10 @@ export async function saveUser(user) {
     partitionKey: partitionKey,
     rowKey: rowKey,
     userId: user.userId || user.id || user.email,
-    email: user.email,
+    email: user.email.toLowerCase().trim(),
     name: fullName,
-    firstName: user.firstName || (fullName?.split(' ')[0] || fullName),
-    lastName: user.lastName || (fullName?.split(' ').slice(1).join(' ') || ''),
+    firstName: user.firstName?.trim() || (fullName?.split(' ')[0] || fullName),
+    lastName: user.lastName?.trim() || (fullName?.split(' ').slice(1).join(' ') || ''),
     password: user.password, // Should be hashed
     role: user.role || 'learner',
     createdAt: user.createdAt || new Date().toISOString(),
@@ -126,6 +161,9 @@ export async function saveUser(user) {
   };
   
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
+  
+  logger.debug({ email: entity.email, role: entity.role }, 'User saved');
+  
   return entity;
 }
 
@@ -152,7 +190,7 @@ export async function getAllUsers() {
       });
     }
   } catch (error) {
-    console.error('[Users Storage] Error getting all users:', error);
+    logger.error({ error: error.message }, 'Error getting all users');
     return [];
   }
   
@@ -163,12 +201,17 @@ export async function getAllUsers() {
  * Delete user
  */
 export async function deleteUser(email) {
+  if (!email) {
+    return false;
+  }
+  
   const client = getTableClient('USERS');
   const partitionKey = 'user';
-  const rowKey = email.toLowerCase();
+  const rowKey = email.toLowerCase().trim();
   
   try {
     await client.deleteEntity(partitionKey, rowKey);
+    logger.info({ email }, 'User deleted');
     return true;
   } catch (error) {
     if (error.statusCode === 404 || error.code === 'ResourceNotFound') {
@@ -178,30 +221,54 @@ export async function deleteUser(email) {
   }
 }
 
+// ============================================================================
+// Default Admin Initialization
+// ============================================================================
+
 /**
  * Initialize default admin user if not exists
+ * Uses environment variables for credentials (never hardcoded in production)
  */
 export async function initializeDefaultAdmin() {
   try {
-    const existingAdmin = await getUserByEmail('admin@example.com');
+    const existingAdmin = await getUserByEmail(DEFAULT_ADMIN_EMAIL);
     if (existingAdmin) {
-      console.log('✓ Default admin user already exists');
+      logger.debug('Default admin user already exists');
+      return;
+    }
+    
+    // In production, require DEFAULT_ADMIN_PASSWORD to be set
+    if (NODE_ENV === 'production' && !DEFAULT_ADMIN_PASSWORD) {
+      logger.warn('DEFAULT_ADMIN_PASSWORD not set in production - skipping default admin creation');
+      logger.warn('Set DEFAULT_ADMIN_EMAIL and DEFAULT_ADMIN_PASSWORD environment variables to create an admin user');
+      return;
+    }
+    
+    // Use environment variable or secure default for development only
+    const adminPassword = DEFAULT_ADMIN_PASSWORD || (NODE_ENV !== 'production' ? 'admin-dev-password-change-me' : null);
+    
+    if (!adminPassword) {
+      logger.warn('Cannot create default admin - no password configured');
       return;
     }
     
     // Create default admin
-    const hashedPassword = await bcrypt.hash('admin123', 10);
+    const hashedPassword = await bcrypt.hash(adminPassword, 12);
     await saveUser({
       userId: '1',
-      email: 'admin@example.com',
+      email: DEFAULT_ADMIN_EMAIL,
       password: hashedPassword,
-      name: 'Admin User',
+      name: DEFAULT_ADMIN_NAME,
       role: 'admin'
     });
     
-    console.log('✓ Default admin user created (email: admin@example.com, password: admin123)');
+    if (NODE_ENV !== 'production') {
+      // Only log credentials in development
+      logger.info({ email: DEFAULT_ADMIN_EMAIL }, 'Default admin user created (development mode)');
+    } else {
+      logger.info('Default admin user created');
+    }
   } catch (error) {
-    console.error('[Users Storage] Error initializing default admin:', error);
+    logger.error({ error: error.message }, 'Error initializing default admin');
   }
 }
-

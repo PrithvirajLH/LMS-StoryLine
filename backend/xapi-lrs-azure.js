@@ -6,13 +6,21 @@
 import {
   getTableClient,
   getStatementPartitionKey,
+  getStatementPartitionKeys,
   getStatePartitionKey,
   getActivityProfilePartitionKey,
   getAgentProfilePartitionKey,
   retryOperation,
+  sanitizeODataValue,
+  buildODataFilter,
   TABLES
 } from './azure-tables.js';
 import * as verbTracker from './xapi-verb-tracker.js';
+import { xapiLogger as logger } from './logger.js';
+
+// ============================================================================
+// Statement Operations
+// ============================================================================
 
 /**
  * Save xAPI statement(s) to Azure Table Storage
@@ -41,18 +49,16 @@ export async function saveStatement(statement) {
 
   // Extract partition key from actor
   const partitionKey = getStatementPartitionKey(statement.actor);
-  const rowKey = statement.id.split('/').pop() || statement.id; // Use last part of ID as row key
+  const rowKey = statement.id.split('/').pop() || statement.id;
 
   // Store statement as entity
-  // Only store columns that are used for filtering/queries
-  // Removed: statementId (use rowKey), actor (in statement JSON), timestamp (in statement JSON), stored (in statement JSON)
   const entity = {
     partitionKey,
     rowKey,
-    statement: JSON.stringify(statement), // Store full statement as JSON (contains all data)
-    verb: statement.verb?.id || '', // Used for filtering
-    object: statement.object?.id || '', // Used for filtering
-    registration: statement.context?.registration || null // Used for filtering
+    statement: JSON.stringify(statement),
+    verb: statement.verb?.id || '',
+    object: statement.object?.id || '',
+    registration: statement.context?.registration || null
   };
 
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
@@ -64,9 +70,9 @@ export async function saveStatement(statement) {
   const verbId = statement.verb?.id || '';
   
   if (verbId) {
-    // Track verb usage (async, persists to Azure - don't await to avoid blocking)
+    // Track verb usage (async, don't await)
     verbTracker.trackVerbUsage(verbId, userEmail, activityId).catch(err => {
-      console.error(`[xAPI] Error tracking verb usage:`, err);
+      logger.error({ verbId, error: err.message }, 'Error tracking verb usage');
     });
     
     // Process custom verb handlers
@@ -76,15 +82,14 @@ export async function saveStatement(statement) {
       timestamp: statement.timestamp
     });
     
-    // Log custom/unknown verbs for monitoring
+    // Log custom/unknown verbs
     const verbConfig = verbTracker.getVerbConfig(verbId);
     if (verbConfig.isCustom || verbConfig.isUnknown) {
-      console.log(`[xAPI Verb Tracker] Custom/Unknown verb: ${verbId}`);
-      console.log(`[xAPI Verb Tracker] Category: ${verbConfig.category}, Action: ${verbConfig.action}`);
+      logger.info({ verbId, category: verbConfig.category, action: verbConfig.action }, 'Custom/Unknown verb detected');
     }
   }
 
-  console.log(`[xAPI Azure] Statement saved: ${statement.id.substring(0, 50)}...`);
+  logger.debug({ statementId: statement.id.substring(0, 50) }, 'Statement saved');
   
   return { status: 200, data: [statement.id] };
 }
@@ -94,67 +99,154 @@ export async function saveStatement(statement) {
  */
 export async function queryStatements(query) {
   const client = getTableClient('STATEMENTS');
+  const limit = Math.min(parseInt(query.limit, 10) || 10, 1000);
+  const offset = parseInt(query.offset, 10) || 0;
 
-  // Build OData filter
-  let filter = '';
-
-  // Filter by agent (partition key)
-  if (query.agent) {
-    const agent = typeof query.agent === 'string' ? JSON.parse(query.agent) : query.agent;
-    const partitionKey = getStatementPartitionKey(agent);
-    filter = `PartitionKey eq '${partitionKey}'`;
+  function encodeContinuationToken(token) {
+    if (!token) return '';
+    const json = JSON.stringify(token);
+    return Buffer.from(json, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
   }
 
-  // Filter by activity
-  if (query.activity) {
-    const activityId = typeof query.activity === 'string' ? query.activity : query.activity.id;
-    if (filter) filter += ' and ';
-    filter += `object eq '${activityId}'`;
-  }
-
-  // Filter by registration
-  if (query.registration) {
-    if (filter) filter += ' and ';
-    filter += `registration eq '${query.registration}'`;
-  }
-
-  // Filter by verb
-  if (query.verb) {
-    const verbId = typeof query.verb === 'string' ? query.verb : query.verb.id;
-    if (filter) filter += ' and ';
-    filter += `verb eq '${verbId}'`;
+  function decodeContinuationToken(token) {
+    if (!token) return null;
+    try {
+      let base64 = token.replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4) {
+        base64 += '=';
+      }
+      return JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
+    } catch (error) {
+      return null;
+    }
   }
 
   try {
     const entities = [];
-    const limit = parseInt(query.limit) || 10;
-    const offset = parseInt(query.offset) || 0;
+    const cursorToken = decodeContinuationToken(query.cursor || query.more);
 
-    // Query entities
-    const listEntities = client.listEntities({
-      queryOptions: {
-        filter: filter || undefined
+    let agent = null;
+    if (query.agent) {
+      if (typeof query.agent === 'string') {
+        try {
+          agent = JSON.parse(decodeURIComponent(query.agent));
+        } catch (error) {
+          agent = JSON.parse(query.agent);
+        }
+      } else {
+        agent = query.agent;
       }
-    });
+    }
 
-    let count = 0;
-    for await (const entity of listEntities) {
-      if (count >= offset + limit) break;
-      if (count >= offset) {
+    const partitionKeys = agent ? getStatementPartitionKeys(agent) : [null];
+    let partitionIndex = cursorToken?.partitionIndex || 0;
+    let continuationToken = cursorToken?.continuationToken || null;
+    let remaining = limit;
+    let skipped = offset;
+    let more = '';
+
+    for (let i = partitionIndex; i < partitionKeys.length && remaining > 0; i++) {
+      const partitionKey = partitionKeys[i];
+
+      // Build OData filter with sanitization
+      const conditions = [];
+      
+      if (partitionKey) {
+        conditions.push({ field: 'PartitionKey', value: partitionKey });
+      }
+
+      if (query.activity) {
+        const activityId = typeof query.activity === 'string' ? query.activity : query.activity.id;
+        conditions.push({ field: 'object', value: activityId });
+      }
+
+      if (query.registration) {
+        conditions.push({ field: 'registration', value: query.registration });
+      }
+
+      if (query.verb) {
+        const verbId = typeof query.verb === 'string' ? query.verb : query.verb.id;
+        conditions.push({ field: 'verb', value: verbId });
+      }
+
+      const filter = buildODataFilter(conditions, 'and') || undefined;
+
+      const listEntities = client.listEntities({
+        queryOptions: { filter }
+      });
+
+      const pageIterator = listEntities.byPage({
+        maxPageSize: Math.max(remaining + skipped, remaining),
+        continuationToken: i === partitionIndex ? continuationToken : undefined
+      });
+
+      const page = await pageIterator.next();
+      if (page.done) {
+        continuationToken = null;
+        continue;
+      }
+
+      for (const entity of page.value) {
+        if (skipped > 0) {
+          skipped--;
+          continue;
+        }
         entities.push(JSON.parse(entity.statement));
+        remaining--;
+        if (remaining <= 0) break;
       }
-      count++;
+
+      const nextToken = page.value.continuationToken || page.continuationToken || null;
+      if (nextToken) {
+        more = encodeContinuationToken({ partitionIndex: i, continuationToken: nextToken });
+        break;
+      }
+
+      if (remaining <= 0 && i < partitionKeys.length - 1) {
+        more = encodeContinuationToken({ partitionIndex: i + 1, continuationToken: null });
+        break;
+      }
     }
 
     return {
       status: 200,
       data: {
         statements: entities,
-        more: count > offset + limit ? `${offset + limit}` : ''
+        more
       }
     };
   } catch (error) {
-    console.error('[xAPI Azure] Query error:', error);
+    logger.error({ error: error.message }, 'Query statements error');
+    throw error;
+  }
+}
+
+/**
+ * Query statements by activity prefix (admin/coach inspection)
+ */
+export async function queryStatementsByActivityPrefix(activityId, limit = 50, registration = null) {
+  const client = getTableClient('STATEMENTS');
+  const statements = [];
+
+  try {
+    let count = 0;
+    for await (const entity of client.listEntities()) {
+      if (!entity.statement) continue;
+      const statement = JSON.parse(entity.statement);
+      const objectId = statement.object?.id || '';
+      if (!objectId || !objectId.startsWith(activityId)) continue;
+      if (registration && statement.context?.registration !== registration) continue;
+      statements.push(statement);
+      count++;
+      if (count >= limit) break;
+    }
+    return { status: 200, data: { statements } };
+  } catch (error) {
+    logger.error({ activityId, error: error.message }, 'Query by activity prefix error');
     throw error;
   }
 }
@@ -165,97 +257,78 @@ export async function queryStatements(query) {
 export async function getStatement(statementId) {
   const client = getTableClient('STATEMENTS');
 
-  // Try to find statement by scanning partitions (for production, consider secondary index)
-  // For better performance, you might want to store statementId -> partitionKey mapping
   try {
     const rowKey = statementId.split('/').pop() || statementId;
     
-    // Query across partitions (this is slower, but works)
-    // In production, consider adding a lookup table or using Cosmos DB
+    // Use sanitized filter
+    const filter = `RowKey eq '${sanitizeODataValue(rowKey)}'`;
+    
     const listEntities = client.listEntities({
-      queryOptions: {
-        filter: `rowKey eq '${rowKey}'`
-      }
+      queryOptions: { filter }
     });
 
     for await (const entity of listEntities) {
-      // rowKey should match the statement ID (last part of UUID)
-      // Also check the statement JSON to be sure
       const statement = JSON.parse(entity.statement);
       if (statement.id === statementId || entity.rowKey === rowKey) {
-        return {
-          status: 200,
-          data: statement
-        };
+        return { status: 200, data: statement };
       }
     }
 
     return { status: 404, data: null };
   } catch (error) {
-    console.error('[xAPI Azure] Get statement error:', error);
+    logger.error({ statementId, error: error.message }, 'Get statement error');
     return { status: 404, data: null };
   }
 }
 
+// ============================================================================
+// State Operations
+// ============================================================================
+
 /**
  * Save activity state
- * For resume state, saves both with and without registration for cross-session resume
  */
 export async function saveState(activityId, agent, stateId, state, registration = null) {
   const client = getTableClient('STATE');
   
-  // Normalize agent to ensure consistent partition key
   const normalizedAgent = typeof agent === 'string' ? JSON.parse(agent) : agent;
   const partitionKey = getStatePartitionKey(activityId, normalizedAgent);
   
-  console.log(`[xAPI Azure] Saving state - partitionKey: ${partitionKey}, stateId: ${stateId}, registration: ${registration || 'none'}, stateType: ${typeof state}`);
+  logger.debug({ partitionKey, stateId, registration }, 'Saving state');
   
-  // Storyline sends state as a string (proprietary encoded format), not JSON
-  // Save it as-is - don't try to JSON.stringify it
   const stateString = typeof state === 'string' ? state : JSON.stringify(state);
   
   // For resume/bookmark state, save without registration for persistent resume
-  // This allows resuming across different launch sessions (different registration IDs)
   if (stateId === 'resume' || stateId === 'bookmark') {
-    // Save without registration (persistent resume)
-    // Only store state data - other fields are in partitionKey/rowKey
     const entityWithoutReg = {
       partitionKey,
-      rowKey: stateId, // Just the stateId, no registration
-      state: stateString // Save as string (Storyline's format)
-      // Removed: activityId (in partitionKey), agent (in partitionKey), 
-      //          stateId (in rowKey), registration (not needed), updated (not used)
+      rowKey: stateId,
+      state: stateString
     };
     
     await retryOperation(() => client.upsertEntity(entityWithoutReg, 'Replace'));
-    console.log(`[xAPI Azure] Saved resume state without registration for persistent resume`);
+    logger.debug({ stateId }, 'Resume state saved without registration');
     
-    // Also save with registration if provided (for session-specific state)
     if (registration) {
       const entityWithReg = {
         partitionKey,
         rowKey: `${stateId}|${registration}`,
-        state: stateString // Save as string (Storyline's format)
-        // Removed: activityId (in partitionKey), agent (in partitionKey), 
-        //          stateId (in rowKey), registration (in rowKey), updated (not used)
+        state: stateString
       };
       
       await retryOperation(() => client.upsertEntity(entityWithReg, 'Replace'));
-      console.log(`[xAPI Azure] Saved resume state with registration ${registration}`);
+      logger.debug({ stateId, registration }, 'Resume state saved with registration');
     }
     
     return { status: 204, data: null };
   }
   
-  // For other state types, use registration if provided
   const rowKey = `${stateId}${registration ? `|${registration}` : ''}`;
 
   const entity = {
     partitionKey,
     rowKey,
-    state: stateString // Save as string (Storyline's format)
-    // Removed: activityId (in partitionKey), agent (in partitionKey), 
-    //          stateId (in rowKey), registration (in rowKey), updated (not used)
+    state: stateString
   };
 
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
@@ -265,64 +338,48 @@ export async function saveState(activityId, agent, stateId, state, registration 
 
 /**
  * Get activity state
- * For resume state, tries without registration first (since registration changes per launch)
  */
 export async function getState(activityId, agent, stateId, registration = null) {
   const client = getTableClient('STATE');
   
-  // Normalize agent to ensure consistent partition key
   const normalizedAgent = typeof agent === 'string' ? JSON.parse(agent) : agent;
   const partitionKey = getStatePartitionKey(activityId, normalizedAgent);
   
-  console.log(`[xAPI Azure] Getting state - partitionKey: ${partitionKey}, stateId: ${stateId}, registration: ${registration || 'none'}`);
+  logger.debug({ partitionKey, stateId, registration }, 'Getting state');
   
-  // For resume state, try without registration first (registration changes per launch)
-  // This allows resuming across different launch sessions
+  // For resume state, try without registration first
   if (stateId === 'resume' || stateId === 'bookmark') {
-    // First try: without registration (persistent resume state)
     try {
       const rowKeyWithoutReg = stateId;
       const entity = await client.getEntity(partitionKey, rowKeyWithoutReg);
       if (entity && entity.state) {
-        // Storyline state is stored as a string (proprietary format), return as-is
-        // Don't try to parse as JSON - it's not JSON
-        console.log(`[xAPI Azure] Found resume state without registration (${entity.state.length} chars)`);
-        return {
-          status: 200,
-          data: entity.state // Return as string, not parsed
-        };
+        logger.debug({ stateId, length: entity.state.length }, 'Found state without registration');
+        return { status: 200, data: entity.state };
       }
     } catch (error) {
-      // Not found without registration, continue to try with registration
       if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
-        console.error('[xAPI Azure] Error getting state without registration:', error);
+        logger.error({ stateId, error: error.message }, 'Error getting state without registration');
       }
     }
     
-    // Second try: with registration (session-specific state)
     if (registration) {
       try {
         const rowKeyWithReg = `${stateId}|${registration}`;
         const entity = await client.getEntity(partitionKey, rowKeyWithReg);
         if (entity && entity.state) {
-          console.log(`[xAPI Azure] Found resume state with registration ${registration} (${entity.state.length} chars)`);
-          return {
-            status: 200,
-            data: entity.state // Return as string, not parsed
-          };
+          logger.debug({ stateId, registration, length: entity.state.length }, 'Found state with registration');
+          return { status: 200, data: entity.state };
         }
       } catch (error) {
         if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
-          console.error('[xAPI Azure] Error getting state with registration:', error);
+          logger.error({ stateId, registration, error: error.message }, 'Error getting state with registration');
         }
       }
     }
     
-    // Not found
     return { status: 404, data: null };
   }
   
-  // For other state types, use registration if provided
   const rowKey = `${stateId}${registration ? `|${registration}` : ''}`;
 
   try {
@@ -330,17 +387,12 @@ export async function getState(activityId, agent, stateId, registration = null) 
     if (!entity || !entity.state) {
       return { status: 404, data: null };
     }
-    // Return state as string (Storyline's format), not parsed as JSON
-    return {
-      status: 200,
-      data: entity.state
-    };
+    return { status: 200, data: entity.state };
   } catch (error) {
-    // Azure Tables returns 404 for missing entities
     if (error.statusCode === 404 || error.code === 'ResourceNotFound') {
       return { status: 404, data: null };
     }
-    console.error('[xAPI Azure] Get state error:', error);
+    logger.error({ stateId, error: error.message }, 'Get state error');
     throw error;
   }
 }
@@ -359,11 +411,15 @@ export async function deleteState(activityId, agent, stateId, registration = nul
     return { status: 204, data: null };
   } catch (error) {
     if (error.statusCode === 404) {
-      return { status: 204, data: null }; // Already deleted
+      return { status: 204, data: null };
     }
     throw error;
   }
 }
+
+// ============================================================================
+// Activity Profile Operations
+// ============================================================================
 
 /**
  * Save activity profile
@@ -399,10 +455,7 @@ export async function getActivityProfile(activityId, profileId) {
 
   try {
     const entity = await client.getEntity(partitionKey, rowKey);
-    return {
-      status: 200,
-      data: JSON.parse(entity.profile)
-    };
+    return { status: 200, data: JSON.parse(entity.profile) };
   } catch (error) {
     if (error.statusCode === 404) {
       return { status: 404, data: null };
@@ -430,6 +483,10 @@ export async function deleteActivityProfile(activityId, profileId) {
     throw error;
   }
 }
+
+// ============================================================================
+// Agent Profile Operations
+// ============================================================================
 
 /**
  * Save agent profile
@@ -465,10 +522,7 @@ export async function getAgentProfile(agent, profileId) {
 
   try {
     const entity = await client.getEntity(partitionKey, rowKey);
-    return {
-      status: 200,
-      data: JSON.parse(entity.profile)
-    };
+    return { status: 200, data: JSON.parse(entity.profile) };
   } catch (error) {
     if (error.statusCode === 404) {
       return { status: 404, data: null };
@@ -496,4 +550,3 @@ export async function deleteAgentProfile(agent, profileId) {
     throw error;
   }
 }
-

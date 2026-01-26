@@ -3,12 +3,10 @@ import { Helmet } from "react-helmet-async";
 import { motion } from "framer-motion";
 import { 
   BookOpen, 
-  Clock, 
-  Trophy, 
   Play,
-  CheckCircle2,
   ArrowRight,
-  Sparkles
+  Sparkles,
+  CheckCircle2
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -33,6 +31,7 @@ interface CourseProgress {
   enrolledAt: string;
   startedAt?: string;
   completedAt?: string;
+  category?: string;
 }
 
 const ProgressDashboard = () => {
@@ -94,14 +93,71 @@ const ProgressDashboard = () => {
     c && (c.completionStatus === 'completed' || c.completionStatus === 'passed')
   );
 
-  const inProgressCourses = enrolledCourses.filter(c => 
-    c.completionStatus === 'in_progress' && 
-    (c.progressPercent || 0) > 0 && 
-    (c.progressPercent || 0) < 100
-  );
+  const inProgressCourses = enrolledCourses
+    .filter(c => 
+      c.completionStatus === 'in_progress' && 
+      (c.progressPercent || 0) > 0 && 
+      (c.progressPercent || 0) < 100
+    )
+    .sort((a, b) => {
+      // Sort by latest watched (most recent first)
+      // Use startedAt if available, otherwise fall back to enrolledAt
+      const dateA = a.startedAt ? new Date(a.startedAt).getTime() : new Date(a.enrolledAt).getTime();
+      const dateB = b.startedAt ? new Date(b.startedAt).getTime() : new Date(b.enrolledAt).getTime();
+      return dateB - dateA; // Descending order (most recent first)
+    });
 
-  const totalTimeSpent = courses.reduce((acc, c) => acc + (c.timeSpent || 0), 0);
-  const hoursLearned = Math.round(totalTimeSpent / 3600 * 10) / 10;
+  // Group courses by category with statistics
+  const groupedCourses = useMemo(() => {
+    const groups: Record<string, {
+      category: string;
+      courses: CourseProgress[];
+      stats: {
+        total: number;
+        completed: number;
+        enrolled: number;
+        inProgress: number;
+      };
+    }> = {};
+
+    enrolledCourses.forEach((course) => {
+      const category = course.category || "Uncategorized";
+      
+      if (!groups[category]) {
+        groups[category] = {
+          category,
+          courses: [],
+          stats: {
+            total: 0,
+            completed: 0,
+            enrolled: 0,
+            inProgress: 0,
+          },
+        };
+      }
+
+      groups[category].courses.push(course);
+      groups[category].stats.total++;
+
+      const isCompleted = course.completionStatus === 'completed' || course.completionStatus === 'passed';
+      const isInProgress = course.completionStatus === 'in_progress' && 
+        (course.progressPercent || 0) > 0 && 
+        (course.progressPercent || 0) < 100;
+
+      if (isCompleted) {
+        groups[category].stats.completed++;
+      }
+      if (course.enrollmentStatus === 'enrolled' || course.enrollmentStatus === 'in_progress') {
+        groups[category].stats.enrolled++;
+      }
+      if (isInProgress) {
+        groups[category].stats.inProgress++;
+      }
+    });
+
+    return Object.values(groups);
+  }, [enrolledCourses]);
+
   const artifacts = getArtifacts();
 
   return (
@@ -132,6 +188,66 @@ const ProgressDashboard = () => {
               </div>
             ) : (
               <>
+                {/* Category Statistics Overview - Individual Cards */}
+                {groupedCourses.length > 0 && (
+                  <div className="mb-16">
+                    {groupedCourses.map((group, groupIndex) => (
+                      <motion.div
+                        key={group.category}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: groupIndex * 0.05 }}
+                        className="mb-8"
+                      >
+                        {/* Individual Stat Cards */}
+                        <div className="flex flex-wrap gap-4">
+                          {/* Enrolled */}
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ delay: groupIndex * 0.05 + 0.1 }}
+                            className="bg-card/50 backdrop-blur-sm rounded-2xl border border-border/50 p-6 shadow-sm hover:shadow-md transition-all duration-300 flex-1 min-w-[140px]"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <BookOpen className="h-5 w-5 text-foreground" />
+                              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Enrolled</span>
+                            </div>
+                            <p className="text-3xl font-bold text-foreground">{group.stats.enrolled}</p>
+                          </motion.div>
+
+                          {/* In Progress */}
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ delay: groupIndex * 0.05 + 0.15 }}
+                            className="bg-card/50 backdrop-blur-sm rounded-2xl border border-border/50 p-6 shadow-sm hover:shadow-md transition-all duration-300 flex-1 min-w-[140px]"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <Play className="h-5 w-5 text-primary" />
+                              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">In Progress</span>
+                            </div>
+                            <p className="text-3xl font-bold text-primary">{group.stats.inProgress}</p>
+                          </motion.div>
+
+                          {/* Completed */}
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ delay: groupIndex * 0.05 + 0.2 }}
+                            className="bg-card/50 backdrop-blur-sm rounded-2xl border border-border/50 p-6 shadow-sm hover:shadow-md transition-all duration-300 flex-1 min-w-[140px]"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <CheckCircle2 className="h-5 w-5 text-green-600" />
+                              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Completed</span>
+                            </div>
+                            <p className="text-3xl font-bold text-green-600">{group.stats.completed}</p>
+                          </motion.div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Current Activity - Largest Visual Weight */}
                 {inProgressCourses.length > 0 && (
                   <div className="mb-24">
@@ -190,7 +306,7 @@ const ProgressDashboard = () => {
 
                               {/* Course Info */}
                               <div className="flex-1 flex flex-col p-5">
-                                <h3 className="font-serif font-semibold text-lg text-foreground group-hover:text-foreground/80 transition-colors line-clamp-2 tracking-wide flex-1 leading-snug mb-3">
+                                <h3 className="font-serif font-semibold text-xl text-foreground group-hover:text-primary transition-colors line-clamp-2 tracking-normal flex-1 leading-relaxed mb-3">
                                   {course.title}
                                 </h3>
 
@@ -226,97 +342,12 @@ const ProgressDashboard = () => {
                   </div>
                 )}
 
-                {/* Motivation/Stats - Subtle, Integrated */}
-                {enrolledCourses.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
-                    <motion.div 
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.1 }}
-                      whileHover={{ y: -4, scale: 1.02 }}
-                      className="glass-sm p-6 rounded-2xl border border-border/50 shadow-lg hover:shadow-2xl transition-all duration-300 bg-card/80 backdrop-blur-sm"
-                      style={{
-                        boxShadow: '0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-                      }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Active</p>
-                          <p className="text-4xl font-serif font-bold text-foreground">{inProgressCourses.length}</p>
-                        </div>
-                        <div 
-                          className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
-                          style={{
-                            background: 'linear-gradient(135deg, #FF6B9D, #C44569, #8B5FBF)'
-                          }}
-                        >
-                          <Play className="h-6 w-6 text-white" />
-                        </div>
-                      </div>
-                    </motion.div>
-                    <motion.div 
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.2 }}
-                      whileHover={{ y: -4, scale: 1.02 }}
-                      className="glass-sm p-6 rounded-2xl border border-border/50 shadow-lg hover:shadow-2xl transition-all duration-300 bg-card/80 backdrop-blur-sm"
-                      style={{
-                        boxShadow: '0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-                      }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Completed</p>
-                          <p className="text-4xl font-serif font-bold text-foreground">{completedCourses.length}</p>
-                        </div>
-                        <div 
-                          className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
-                          style={{
-                            background: 'linear-gradient(135deg, #4ECDC4, #44A08D)'
-                          }}
-                        >
-                          <CheckCircle2 className="h-6 w-6 text-white" />
-                        </div>
-                      </div>
-                    </motion.div>
-                    <motion.div 
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.3 }}
-                      whileHover={{ y: -4, scale: 1.02 }}
-                      className="glass-sm p-6 rounded-2xl border border-border/50 shadow-lg hover:shadow-2xl transition-all duration-300 bg-card/80 backdrop-blur-sm"
-                      style={{
-                        boxShadow: '0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-                      }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-2 uppercase tracking-wider font-serif">Time</p>
-                          <p className="text-4xl font-serif font-bold text-foreground">{hoursLearned}</p>
-                          <p className="text-base text-muted-foreground mt-1 font-serif">hours</p>
-                        </div>
-                        <div 
-                          className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
-                          style={{
-                            background: 'linear-gradient(135deg, #8B5FBF, #C44569)'
-                          }}
-                        >
-                          <Clock className="h-6 w-6 text-white" />
-                        </div>
-                      </div>
-                    </motion.div>
-                  </div>
-                )}
-
                 {/* Library/Archive - Hidden behind clean menu */}
                 {completedCourses.length > 0 && (
-                  <details className="mb-8">
-                    <summary className="cursor-pointer text-4xl font-serif font-semibold text-foreground mb-4 list-none">
-                      <div className="flex items-center justify-between">
-                        <span className="mb-2">Completed</span>
-                        <ArrowRight className="h-5 w-5 text-muted-foreground" />
-                      </div>
-                    </summary>
+                  <div className="mb-8">
+                    <h2 className="text-4xl font-serif font-semibold text-foreground mb-4">
+                      Completed
+                    </h2>
 
                     <div className="mt-6">
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4 gap-4">
@@ -418,7 +449,7 @@ const ProgressDashboard = () => {
                         })}
                       </div>
                     </div>
-                  </details>
+                  </div>
                 )}
 
                 {/* Empty State */}
@@ -448,23 +479,6 @@ const ProgressDashboard = () => {
                 )}
 
                 {/* Achievement Section */}
-                {completedCourses.length > 0 && (
-                  <div className="mt-8 rounded-xl p-6 border border-primary/30 shadow-lg" style={{ background: 'linear-gradient(135deg, #8B5FBF 0%, #C44569 50%, #FF6B9D 100%)' }}>
-                    <div className="flex items-center gap-4">
-                      <div className="h-14 w-14 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center flex-shrink-0">
-                        <Trophy className="h-7 w-7 text-white" />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="font-serif font-semibold text-white mb-1 text-2xl drop-shadow-sm">
-                          {completedCourses.length} {completedCourses.length === 1 ? 'Course' : 'Courses'} Completed!
-                        </h3>
-                        <p className="text-base text-white/95 drop-shadow-sm">
-                          Great progress! Keep up the excellent work.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </>
             )}
           </div>

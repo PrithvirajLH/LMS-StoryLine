@@ -13,7 +13,7 @@ export default function HeroStatement() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.8, ease: "easeOut" }}
-      className="macro-padding py-24 lg:py-32"
+      className="macro-padding pt-24 lg:pt-32"
     >
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-center max-w-7xl mx-auto">
         <div className="relative z-10 lg:pr-8">
