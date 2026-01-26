@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Helmet } from "react-helmet-async";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
@@ -54,7 +54,7 @@ const Courses = () => {
   };
 
   const handleCourseClick = (courseId: string) => {
-    navigate(`/player/${courseId}`);
+    navigate(`/learner/player/${courseId}`);
   };
 
   const handleEnroll = async (courseId: string, e?: React.MouseEvent) => {
@@ -136,7 +136,7 @@ const Courses = () => {
           transition={{ duration: 0.4 }}
           className="border-b border-border bg-card/50 backdrop-blur-sm"
         >
-          <div className="px-8 py-8">
+          <div className="macro-padding py-8">
             <div className="flex items-start justify-between gap-6">
               <div className="flex flex-col gap-6 flex-1">
                 <div>
@@ -166,7 +166,7 @@ const Courses = () => {
 
         {/* Main Content */}
         <div className="flex-1 overflow-y-auto">
-          <div className="p-8">
+          <div className="macro-padding py-8">
             {/* Error Message */}
             {error && (
               <motion.div

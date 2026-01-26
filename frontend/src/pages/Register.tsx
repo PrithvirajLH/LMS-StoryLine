@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import api from "../services/api";
-import { handleAuthResponse } from "../services/auth";
+import { handleAuthResponse, getDefaultLandingPath } from "../services/auth";
 
 const Register = () => {
   const navigate = useNavigate();
@@ -29,7 +29,7 @@ const Register = () => {
       const response = await api.post('/api/auth/register', formData);
       handleAuthResponse(response.data);
       toast.success("Account created successfully!");
-      navigate("/dashboard");
+      navigate(getDefaultLandingPath());
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } };
       toast.error(error.response?.data?.error || 'Registration failed');

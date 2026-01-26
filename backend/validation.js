@@ -193,6 +193,58 @@ export const moduleRulesSchema = z.object({
 });
 
 // ============================================================================
+// Provider Schemas
+// ============================================================================
+
+export const providerSchema = z.object({
+  name: z.string()
+    .min(1, 'Provider name is required')
+    .max(200, 'Provider name must be less than 200 characters')
+    .transform(val => val.trim())
+});
+
+export const providerCourseSchema = z.object({
+  courseId: z.string()
+    .min(1, 'Course ID is required')
+    .max(100, 'Course ID must be less than 100 characters')
+});
+
+export const userProviderSchema = z.object({
+  providerId: z.string().max(100).nullable().optional()
+});
+
+// User Roles Schema
+const roleNameSchema = z.enum([
+  'learner',
+  'admin',
+  'manager',
+  'coordinator',
+  'learningCoordinator',
+  'coach',
+  'instructionalCoach',
+  'corporate',
+  'hr'
+]);
+
+export const userRolesSchema = z.object({
+  role: roleNameSchema.optional(),
+  roles: z.array(roleNameSchema).optional(),
+  flags: z.object({
+    isAdmin: z.boolean().optional(),
+    isManager: z.boolean().optional(),
+    isCoordinator: z.boolean().optional(),
+    isLearningCoordinator: z.boolean().optional(),
+    isCoach: z.boolean().optional(),
+    isInstructionalCoach: z.boolean().optional(),
+    isCorporate: z.boolean().optional(),
+    isHr: z.boolean().optional(),
+    isLearner: z.boolean().optional()
+  }).optional()
+}).refine((data) => data.role || data.roles || data.flags, {
+  message: 'At least one of role, roles, or flags must be provided.'
+});
+
+// ============================================================================
 // Query Parameter Schemas
 // ============================================================================
 

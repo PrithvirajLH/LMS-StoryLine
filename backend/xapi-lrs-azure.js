@@ -22,6 +22,12 @@ import { xapiLogger as logger } from './logger.js';
 // Statement Operations
 // ============================================================================
 
+function getBaseActivityId(activityId) {
+  if (!activityId || typeof activityId !== 'string') return '';
+  const slashIndex = activityId.indexOf('/');
+  return slashIndex > 0 ? activityId.substring(0, slashIndex) : activityId;
+}
+
 /**
  * Save xAPI statement(s) to Azure Table Storage
  */
@@ -50,6 +56,8 @@ export async function saveStatement(statement) {
   // Extract partition key from actor
   const partitionKey = getStatementPartitionKey(statement.actor);
   const rowKey = statement.id.split('/').pop() || statement.id;
+  const activityId = statement.object?.id || '';
+  const activityBase = getBaseActivityId(activityId);
 
   // Store statement as entity
   const entity = {
@@ -57,7 +65,8 @@ export async function saveStatement(statement) {
     rowKey,
     statement: JSON.stringify(statement),
     verb: statement.verb?.id || '',
-    object: statement.object?.id || '',
+    object: activityId,
+    activityBase: activityBase || activityId,
     registration: statement.context?.registration || null
   };
 
@@ -65,7 +74,6 @@ export async function saveStatement(statement) {
 
   // Track verb usage for statistics
   const actor = statement.actor;
-  const activityId = statement.object?.id || '';
   const userEmail = actor.mbox ? actor.mbox.replace('mailto:', '') : 'unknown';
   const verbId = statement.verb?.id || '';
   
@@ -164,6 +172,13 @@ export async function queryStatements(query) {
         conditions.push({ field: 'object', value: activityId });
       }
 
+      if (query.activityBase) {
+        const activityBase = typeof query.activityBase === 'string'
+          ? query.activityBase
+          : query.activityBase.id;
+        conditions.push({ field: 'activityBase', value: activityBase });
+      }
+
       if (query.registration) {
         conditions.push({ field: 'registration', value: query.registration });
       }
@@ -231,18 +246,39 @@ export async function queryStatements(query) {
 export async function queryStatementsByActivityPrefix(activityId, limit = 50, registration = null) {
   const client = getTableClient('STATEMENTS');
   const statements = [];
+  const activityBase = getBaseActivityId(activityId) || activityId;
+  const allowLegacyScan = process.env.ALLOW_LEGACY_ACTIVITY_SCAN === 'true';
 
   try {
-    let count = 0;
-    for await (const entity of client.listEntities()) {
-      if (!entity.statement) continue;
-      const statement = JSON.parse(entity.statement);
-      const objectId = statement.object?.id || '';
-      if (!objectId || !objectId.startsWith(activityId)) continue;
-      if (registration && statement.context?.registration !== registration) continue;
-      statements.push(statement);
-      count++;
-      if (count >= limit) break;
+    const conditions = [{ field: 'activityBase', value: activityBase }];
+    if (registration) {
+      conditions.push({ field: 'registration', value: registration });
+    }
+
+    const filter = buildODataFilter(conditions, 'and') || undefined;
+    const listEntities = client.listEntities({ queryOptions: { filter } });
+    const pageIterator = listEntities.byPage({ maxPageSize: limit });
+    const page = await pageIterator.next();
+
+    if (!page.done && page.value) {
+      for (const entity of page.value) {
+        if (!entity.statement) continue;
+        statements.push(JSON.parse(entity.statement));
+      }
+    }
+
+    if (statements.length === 0 && allowLegacyScan) {
+      let count = 0;
+      for await (const entity of client.listEntities()) {
+        if (!entity.statement) continue;
+        const statement = JSON.parse(entity.statement);
+        const objectId = statement.object?.id || '';
+        if (!objectId || !objectId.startsWith(activityId)) continue;
+        if (registration && statement.context?.registration !== registration) continue;
+        statements.push(statement);
+        count++;
+        if (count >= limit) break;
+      }
     }
     return { status: 200, data: { statements } };
   } catch (error) {

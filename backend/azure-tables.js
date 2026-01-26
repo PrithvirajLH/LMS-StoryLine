@@ -26,9 +26,14 @@ export const TABLES = {
   COURSES: 'Courses',
   USER_PROGRESS: 'UserProgress',
   USERS: 'Users',
+  PROVIDERS: 'Providers',
+  PROVIDER_COURSES: 'ProviderCourses',
+  USER_ASSIGNMENTS: 'UserAssignments',
   VERB_STATS: 'VerbStatistics',
   COURSE_ATTEMPTS: 'CourseAttempts',
-  MODULE_RULES: 'ModuleRules'
+  MODULE_RULES: 'ModuleRules',
+  AUTH_LOCKOUTS: 'AuthLockouts',
+  KC_ATTEMPTS: 'KnowledgeCheckAttempts'
 };
 
 let credential = null;
@@ -169,7 +174,7 @@ export async function initializeTables() {
 export function getTableClient(tableKey) {
   if (!tableClients[tableKey]) {
     // Create client on-demand if not initialized (for xAPI tables and other tables)
-    const allowedOnDemandTables = ['COURSES', 'USER_PROGRESS', 'USERS', 'VERB_STATS', 'STATE', 'STATEMENTS', 'ACTIVITY_PROFILES', 'AGENT_PROFILES', 'COURSE_ATTEMPTS', 'MODULE_RULES'];
+    const allowedOnDemandTables = ['COURSES', 'USER_PROGRESS', 'USERS', 'PROVIDERS', 'PROVIDER_COURSES', 'USER_ASSIGNMENTS', 'VERB_STATS', 'STATE', 'STATEMENTS', 'ACTIVITY_PROFILES', 'AGENT_PROFILES', 'COURSE_ATTEMPTS', 'MODULE_RULES', 'AUTH_LOCKOUTS', 'KC_ATTEMPTS'];
     if (allowedOnDemandTables.includes(tableKey) && STORAGE_ACCOUNT_NAME && STORAGE_ACCOUNT_KEY) {
       if (!credential) {
         credential = new AzureNamedKeyCredential(STORAGE_ACCOUNT_NAME, STORAGE_ACCOUNT_KEY);

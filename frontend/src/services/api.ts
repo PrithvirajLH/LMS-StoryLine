@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getCsrfToken, getToken } from './auth';
+import { getCsrfToken, getToken, logout } from './auth';
 
 // Dynamically determine API base URL based on environment
 function getApiBaseUrl(): string {
@@ -38,6 +38,14 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const redirectToLogin = (reason: 'unauthorized' | 'forbidden') => {
+  const search = reason ? `?reason=${encodeURIComponent(reason)}` : '';
+  window.location.href = `/login${search}`;
+};
+const forceReauth = async (reason: 'unauthorized' | 'forbidden') => {
+  await logout();
+  redirectToLogin(reason);
+};
 
 // Request interceptor to add auth token and CSRF token
 api.interceptors.request.use(
@@ -92,23 +100,6 @@ api.interceptors.response.use(
       return api.request(config);
     }
     
-    // Handle 401 (Unauthorized) - but NOT on login/register pages
-    // 409 (Conflict) for "user exists" should NOT trigger logout
-    if (error.response?.status === 401) {
-      const isAuthPage = window.location.pathname.includes('/login') || 
-                         window.location.pathname.includes('/register');
-      
-      // Only clear and redirect if not on auth pages
-      if (!isAuthPage) {
-        // Clear local storage
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        localStorage.removeItem('csrfToken');
-        
-        window.location.href = '/login';
-      }
-    }
-    
     // Handle 403 (CSRF error) - automatically refresh token and retry
     if (error.response?.status === 403 && error.response?.data?.error === 'Invalid CSRF token') {
       try {
@@ -118,6 +109,18 @@ api.interceptors.response.use(
         return api.request(config);
       } catch {
         // CSRF refresh failed - let the error propagate
+      }
+    }
+
+    // Handle 401/403 (Unauthorized/Forbidden) - but NOT on login/register pages
+    // 409 (Conflict) for "user exists" should NOT trigger logout
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      const isAuthPage = window.location.pathname.includes('/login') || 
+                         window.location.pathname.includes('/register');
+      
+      if (!isAuthPage) {
+        const reason = error.response?.status === 403 ? 'forbidden' : 'unauthorized';
+        await forceReauth(reason);
       }
     }
     

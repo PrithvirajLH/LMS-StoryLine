@@ -23,7 +23,7 @@ export default function CourseGallery({ courses, onEnroll }: CourseGalleryProps)
   const navigate = useNavigate();
 
   const handleCourseClick = (courseId: string) => {
-    navigate(`/player/${courseId}`);
+    navigate(`/learner/player/${courseId}`);
   };
 
   return (

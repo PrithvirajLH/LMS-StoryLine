@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "react-router-dom";
-import { BookOpen, Home, Play, BarChart3, BookCheck, Users, Activity, LogOut, UserCog, GraduationCap } from "lucide-react";
-import { getUser, isAdmin, logout } from "@/services/auth";
+import { BookOpen, Home, Play, BarChart3, BookCheck, Users, Activity, LogOut, GraduationCap, FileSpreadsheet } from "lucide-react";
+import { getUser, logout } from "@/services/auth";
 import { useCurrentCourse } from "@/contexts/CurrentCourseContext";
 import {
   Popover,
@@ -10,25 +10,67 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
-export const NowBar = () => {
+type NavMode = "learner" | "admin" | "manager" | "coordinator" | "coach" | "corporate";
+
+export const NowBar = ({ mode = "learner" }: { mode?: NavMode }) => {
   const { currentCourse } = useCurrentCourse();
   const location = useLocation();
   const user = getUser();
-  const admin = isAdmin();
-  const isOnCoursePage = location.pathname.startsWith("/player/");
+  const isOnCoursePage = location.pathname.startsWith("/learner/player/");
 
   const handleLogout = async () => {
     await logout();
     window.location.href = "/login";
   };
 
+  const learnerNavItems = [
+    { href: "/learner/dashboard", label: "Home", icon: Home },
+    { href: "/learner/courses", label: "Browse", icon: BookOpen },
+  ];
+
+  const managerNavItems = [
+    { href: "/manager/dashboard", label: "Dashboard", icon: BarChart3 },
+    { href: "/manager/team", label: "Team", icon: Users },
+    { href: "/manager/reports", label: "Reports", icon: FileSpreadsheet },
+  ];
+
+  const coordinatorNavItems = [
+    { href: "/coordinator/dashboard", label: "Dashboard", icon: BarChart3 },
+    { href: "/coordinator/assignments", label: "Assignments", icon: BookCheck },
+    { href: "/coordinator/groups", label: "Groups", icon: Users },
+  ];
+
+  const coachNavItems = [
+    { href: "/coach/dashboard", label: "Dashboard", icon: BarChart3 },
+    { href: "/coach/courses", label: "Courses", icon: BookCheck },
+    { href: "/coach/xapi", label: "xAPI", icon: Activity },
+  ];
+
+  const corporateNavItems = [
+    { href: "/corporate/dashboard", label: "Dashboard", icon: BarChart3 },
+    { href: "/corporate/reports", label: "Reports", icon: FileSpreadsheet },
+  ];
+
   const adminNavItems = [
     { href: "/admin/dashboard", label: "Dashboard", icon: BarChart3 },
     { href: "/admin/courses", label: "Courses", icon: BookCheck },
     { href: "/admin/learners", label: "Learners", icon: GraduationCap },
     { href: "/admin/users", label: "Users", icon: Users },
-    { href: "/admin/verbs", label: "xAPI Verbs", icon: Activity },
+    { href: "/admin/xapi/verbs", label: "xAPI Verbs", icon: Activity },
   ];
+
+  const navItems =
+    mode === "admin"
+      ? adminNavItems
+      : mode === "manager"
+        ? managerNavItems
+        : mode === "coordinator"
+          ? coordinatorNavItems
+          : mode === "coach"
+            ? coachNavItems
+            : mode === "corporate"
+              ? corporateNavItems
+              : learnerNavItems;
 
   return (
     <motion.div
@@ -41,61 +83,32 @@ export const NowBar = () => {
         className="rounded-full px-3 sm:px-5 md:px-7 py-2 sm:py-3 md:py-4 flex items-center gap-1.5 sm:gap-2 md:gap-3 lg:gap-4 shadow-lg sm:shadow-xl md:shadow-2xl border sm:border-2 border-foreground/20 flex-nowrap overflow-x-auto scrollbar-hide bg-background/95 backdrop-blur-xl"
       >
         {/* Navigation Items */}
-        <Link
-          to="/dashboard"
-          className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 md:px-4 py-1.5 sm:py-2 rounded-full transition-all duration-200 flex-shrink-0 ${
-            location.pathname === "/dashboard"
-              ? "bg-foreground text-background"
-              : "text-foreground hover:text-foreground hover:bg-foreground/15"
-          }`}
-        >
-          <Home className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0" />
-          <span className="text-sm sm:text-base font-semibold hidden sm:inline whitespace-nowrap">Home</span>
-        </Link>
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const isActive =
+            mode === "admin"
+              ? location.pathname.startsWith(item.href)
+              : location.pathname === item.href;
 
-        <Link
-          to="/courses"
-          className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 md:px-4 py-1.5 sm:py-2 rounded-full transition-all duration-200 flex-shrink-0 ${
-            location.pathname === "/courses"
-              ? "bg-foreground text-background"
-              : "text-foreground hover:text-foreground hover:bg-foreground/15"
-          }`}
-        >
-          <BookOpen className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0" />
-          <span className="text-sm sm:text-base font-semibold hidden sm:inline whitespace-nowrap">Browse</span>
-        </Link>
-
-        {/* Admin Navigation - Partitioned Section */}
-        {admin && (
-          <>
-            <div className="h-4 sm:h-5 md:h-6 w-px bg-border flex-shrink-0" />
-            <div className="flex items-center gap-1 sm:gap-1.5 md:gap-2 flex-shrink-0">
-              {adminNavItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = location.pathname.startsWith(item.href);
-                return (
-                  <Link
-                    key={item.href}
-                    to={item.href}
-                    className={`flex items-center gap-1 px-1.5 sm:px-2 md:px-3 py-1 sm:py-1.5 rounded-full transition-all duration-200 flex-shrink-0 ${
-                      isActive
-                        ? "bg-foreground text-background"
-                        : "text-foreground hover:text-foreground hover:bg-foreground/15"
-                    }`}
-                    title={item.label}
-                  >
-                    <Icon className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0" />
-                    <span className="text-xs sm:text-sm font-semibold hidden xl:inline whitespace-nowrap">{item.label}</span>
-                  </Link>
-                );
-              })}
-            </div>
-            <div className="h-4 sm:h-5 md:h-6 w-px bg-border flex-shrink-0" />
-          </>
-        )}
+          return (
+            <Link
+              key={item.href}
+              to={item.href}
+              className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 md:px-4 py-1.5 sm:py-2 rounded-full transition-all duration-200 flex-shrink-0 ${
+                isActive
+                  ? "bg-foreground text-background"
+                  : "text-foreground hover:text-foreground hover:bg-foreground/15"
+              }`}
+              title={item.label}
+            >
+              <Icon className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0" />
+              <span className="text-sm sm:text-base font-semibold hidden sm:inline whitespace-nowrap">{item.label}</span>
+            </Link>
+          );
+        })}
 
         {/* Current Activity - Highlighted */}
-        {currentCourse && isOnCoursePage ? (
+        {mode === "learner" && currentCourse && isOnCoursePage ? (
           <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}

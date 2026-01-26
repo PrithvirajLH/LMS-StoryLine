@@ -17,7 +17,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Trash2, AlertTriangle, FileText, Folder, Key, Image, Play, Sparkles, Info, X, Edit, BookCheck } from "lucide-react";
+import { Trash2, AlertTriangle, Image, Sparkles, Edit, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 import api from "../services/api";
 import { getUser } from "../services/auth";
@@ -33,6 +33,8 @@ interface Course {
   enrollmentCount: number;
   attemptCount: number;
 }
+
+const primaryColor = '#881337';
 
 export default function CourseManagement() {
   const [courses, setCourses] = useState<Course[]>([]);
@@ -61,9 +63,10 @@ export default function CourseManagement() {
       setLoading(true);
       const response = await api.get('/api/admin/courses');
       setCourses(response.data);
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to load courses');
-      toast.error(err.response?.data?.error || 'Failed to load courses');
+    } catch (err: unknown) {
+      const errorMessage = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to load courses';
+      setError(errorMessage);
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -73,12 +76,11 @@ export default function CourseManagement() {
     e.preventDefault();
     try {
       setError('');
-      // Map blobPath to coursePath for backend
       const courseData = {
         ...courseForm,
         coursePath: courseForm.blobPath
       };
-      delete courseData.blobPath; // Remove blobPath, use coursePath
+      delete (courseData as { blobPath?: string }).blobPath;
       await api.post('/api/admin/courses', courseData);
       setShowCourseForm(false);
       setCourseForm({
@@ -91,9 +93,10 @@ export default function CourseManagement() {
       });
       toast.success('Course created successfully');
       loadCourses();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to create course');
-      toast.error(err.response?.data?.error || 'Failed to create course');
+    } catch (err: unknown) {
+      const errorMessage = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to create course';
+      setError(errorMessage);
+      toast.error(errorMessage);
     }
   };
 
@@ -154,9 +157,10 @@ export default function CourseManagement() {
       setDeleteDialogOpen(false);
       setCourseToDelete(null);
       loadCourses();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to delete course');
-      toast.error(err.response?.data?.error || 'Failed to delete course');
+    } catch (err: unknown) {
+      const errorMessage = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to delete course';
+      setError(errorMessage);
+      toast.error(errorMessage);
       setDeleteDialogOpen(false);
       setCourseToDelete(null);
     }
@@ -181,401 +185,327 @@ export default function CourseManagement() {
       </Helmet>
 
       <div className="flex flex-col h-full bg-background">
-        {/* Header Section */}
+        {/* Header */}
         <motion.header
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="border-b border-border bg-card/50 backdrop-blur-sm"
         >
-          <div className="px-8 py-8">
-            <div className="flex items-start justify-between gap-6">
-              <div className="flex flex-col gap-2 flex-1">
-                <h1 className="text-5xl lg:text-6xl font-serif font-bold text-foreground tracking-tight flex items-center gap-3">
-                  <div 
-                    className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
-                    style={{
-                      background: 'linear-gradient(135deg, #8B5FBF, #C44569)'
-                    }}
-                  >
-                    <BookCheck className="h-6 w-6 text-white" />
-                  </div>
-                  Course Management
-                </h1>
-                <p className="text-muted-foreground text-lg font-serif">
-                  Create, view, and manage courses
-                </p>
-              </div>
-              <Button 
-                onClick={() => {
-                  if (showCourseForm) {
-                    setShowCourseForm(false);
-                    setEditingCourseId(null);
-                    setCourseForm({
-                      title: '',
-                      description: '',
-                      thumbnailUrl: '',
-                      launchFile: 'index_lms.html',
-                      activityId: '',
-                      blobPath: '',
-                    });
-                  } else {
-                    setShowCourseForm(true);
-                  }
-                }} 
-                className="w-full sm:w-auto h-11"
-                variant={showCourseForm ? "outline" : "default"}
-              >
-                {showCourseForm ? (
-                  <>
-                    <X className="h-4 w-4 mr-2" />
-                    Cancel
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-4 w-4 mr-2" />
-                    Create New Course
-                  </>
-                )}
-              </Button>
-            </div>
+          <div className="macro-padding py-8">
+            <h1 className="text-5xl lg:text-6xl font-serif font-bold text-foreground tracking-tight mb-2">
+              Course Management
+            </h1>
+            <p className="text-muted-foreground text-lg font-serif">
+              Create, view, and manage courses
+            </p>
           </div>
         </motion.header>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="macro-padding pb-24">
+          <div className="macro-padding pt-6 pb-8">
             {error && (
-              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20 text-lg font-serif">
+              <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20">
                 {error}
               </div>
+            )}
+
+            {/* Action Button */}
+            {!showCourseForm && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+                className="mb-6"
+              >
+                <Button 
+                  onClick={() => setShowCourseForm(true)} 
+                  className="h-11"
+                  style={{ backgroundColor: primaryColor }}
+                >
+                  <Sparkles className="h-5 w-5 mr-2" />
+                  New Course
+                </Button>
+              </motion.div>
             )}
 
             {showCourseForm && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4 }}
+                transition={{ duration: 0.3 }}
               >
-                <Card className="bg-muted/40 border-border shadow-lg mb-8">
-                <CardHeader className="border-b">
-                  <div className="flex items-center gap-3">
-                    <div 
-                      className="h-12 w-12 rounded-xl flex items-center justify-center shadow-lg"
-                      style={{
-                        background: 'linear-gradient(135deg, #FF6B9D, #C44569, #8B5FBF)'
-                      }}
-                    >
-                      <FileText className="h-6 w-6 text-white" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-2xl font-serif font-semibold">{editingCourseId ? 'Edit Course' : 'Create New Course'}</CardTitle>
-                      <CardDescription className="text-base mt-1 font-serif">{editingCourseId ? 'Update the course details below' : 'Add a new course to your learning management system'}</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-6">
-                  <form onSubmit={editingCourseId ? handleUpdateCourse : handleCreateCourse} className="space-y-6">
-                    {/* Basic Information Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b">
-                        <FileText className="h-5 w-5 text-foreground" />
-                        <h3 className="text-lg font-serif font-semibold">Basic Information</h3>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <Label htmlFor="title" className="text-sm font-medium flex items-center gap-2">
-                          Course Title <span className="text-destructive">*</span>
-                        </Label>
-                        <Input
-                          id="title"
-                          value={courseForm.title}
-                          onChange={(e) => setCourseForm({ ...courseForm, title: e.target.value })}
-                          placeholder="Enter course title"
-                          className="h-11"
-                          required
-                        />
+                <Card className="bg-muted/40 border-border shadow-sm mb-6">
+                  <CardHeader className="pb-4">
+                    <CardTitle className="text-xl font-semibold">
+                      {editingCourseId ? 'Edit Course' : 'New Course'}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={editingCourseId ? handleUpdateCourse : handleCreateCourse} className="space-y-5">
+                      {/* Row 1: Title & Folder Path */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="title">Title *</Label>
+                          <Input
+                            id="title"
+                            value={courseForm.title}
+                            onChange={(e) => setCourseForm({ ...courseForm, title: e.target.value })}
+                            placeholder="Course title"
+                            className="h-11"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="blobPath">Folder Path *</Label>
+                          <Input
+                            id="blobPath"
+                            value={courseForm.blobPath}
+                            onChange={(e) => setCourseForm({ ...courseForm, blobPath: e.target.value })}
+                            placeholder="course-folder-name"
+                            className="h-11"
+                            required
+                          />
+                        </div>
                       </div>
 
+                      {/* Row 2: Activity ID with Auto-fill */}
                       <div className="space-y-2">
-                        <Label htmlFor="description" className="text-sm font-medium">Description</Label>
+                        <Label htmlFor="activityId">Activity ID *</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id="activityId"
+                            value={courseForm.activityId}
+                            onChange={(e) => setCourseForm({ ...courseForm, activityId: e.target.value })}
+                            placeholder="urn:articulate:storyline:xxx"
+                            className="h-11"
+                            required
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={async () => {
+                              if (!courseForm.blobPath) {
+                                toast.error('Enter folder path first');
+                                return;
+                              }
+                              try {
+                                setLoading(true);
+                                const response = await api.get(`/api/admin/extract-activity-id?coursePath=${encodeURIComponent(courseForm.blobPath)}`);
+                                setCourseForm({ ...courseForm, activityId: response.data.activityId });
+                                toast.success('Activity ID extracted');
+                              } catch {
+                                toast.error('Failed to extract');
+                              } finally {
+                                setLoading(false);
+                              }
+                            }}
+                            disabled={!courseForm.blobPath || loading}
+                            className="h-11 px-4"
+                          >
+                            <Sparkles className="h-4 w-4 mr-2" />
+                            Auto-fill
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Row 3: Description */}
+                      <div className="space-y-2">
+                        <Label htmlFor="description">Description</Label>
                         <Textarea
                           id="description"
                           value={courseForm.description}
                           onChange={(e) => setCourseForm({ ...courseForm, description: e.target.value })}
-                          placeholder="Provide a brief description of the course..."
-                          rows={4}
+                          placeholder="Brief description..."
+                          rows={3}
                           className="resize-none"
                         />
                       </div>
-                    </div>
 
-                    {/* Storage & Path Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b">
-                        <Folder className="h-5 w-5 text-foreground" />
-                        <h3 className="text-lg font-serif font-semibold">Storage Configuration</h3>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="space-y-2">
-                          <Label htmlFor="blobPath" className="text-sm font-medium flex items-center gap-2">
-                            Course Folder Path <span className="text-destructive">*</span>
-                          </Label>
-                          <div className="relative">
-                            <Folder className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      {/* Advanced options */}
+                      <details className="group">
+                        <summary className="text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+                          Advanced options
+                        </summary>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-border/50">
+                          <div className="space-y-2">
+                            <Label htmlFor="launchFile">Launch File</Label>
                             <Input
-                              id="blobPath"
-                              value={courseForm.blobPath}
-                              onChange={(e) => setCourseForm({ ...courseForm, blobPath: e.target.value })}
-                              placeholder="sharepoint-navigation-101-custom"
-                              className="pl-10 h-11"
-                              required
+                              id="launchFile"
+                              value={courseForm.launchFile}
+                              onChange={(e) => setCourseForm({ ...courseForm, launchFile: e.target.value })}
+                              placeholder="index_lms.html"
+                              className="h-11"
                             />
                           </div>
-                        </div>
-                        <div className="flex items-start gap-2 p-3 bg-muted/50 rounded-md border border-border/50 mt-3">
-                          <Info className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
-                          <p className="text-xs text-muted-foreground">
-                            Folder name in Azure Blob Storage where course files are stored (e.g., sharepoint-navigation-101-custom)
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* xAPI Configuration Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b">
-                        <Key className="h-5 w-5 text-foreground" />
-                        <h3 className="text-lg font-serif font-semibold">xAPI Configuration</h3>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="space-y-2">
-                          <Label htmlFor="activityId" className="text-sm font-medium flex items-center gap-2">
-                            Activity ID (xAPI IRI) <span className="text-destructive">*</span>
-                          </Label>
-                          <div className="flex gap-2">
-                            <div className="relative flex-1">
-                              <Key className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                              <Input
-                                id="activityId"
-                                value={courseForm.activityId}
-                                onChange={(e) => setCourseForm({ ...courseForm, activityId: e.target.value })}
-                                placeholder="urn:articulate:storyline:5Ujw93Dh98n"
-                                className="pl-10 h-11"
-                                required
-                              />
-                            </div>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              onClick={async () => {
-                                if (!courseForm.blobPath) {
-                                  toast.error('Please enter course folder path first');
-                                  return;
-                                }
-                                try {
-                                  setLoading(true);
-                                  const response = await api.get(`/api/admin/extract-activity-id?coursePath=${encodeURIComponent(courseForm.blobPath)}`);
-                                  setCourseForm({ ...courseForm, activityId: response.data.activityId });
-                                  toast.success(`Activity ID extracted: ${response.data.activityId}`);
-                                } catch (err: any) {
-                                  toast.error(err.response?.data?.error || 'Failed to extract activity ID');
-                                } finally {
-                                  setLoading(false);
-                                }
-                              }}
-                              disabled={!courseForm.blobPath || loading}
-                              className="h-11 px-4"
-                            >
-                              <Sparkles className="h-4 w-4 mr-2" />
-                              Auto-fill
-                            </Button>
-                          </div>
-                        </div>
-                        <div className="flex items-start gap-2 p-3 bg-muted/50 rounded-md border border-border/50 mt-3">
-                          <Info className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
-                          <div className="text-xs text-muted-foreground space-y-1">
-                            <p>Unique identifier for this course in xAPI format.</p>
-                            <p><strong>Tip:</strong> Enter the course folder path above and click "Auto-fill" to extract from tincan.xml automatically.</p>
-                            <p className="font-mono text-[10px] mt-2">Examples: urn:articulate:storyline:5Ujw93Dh98n or http://example.com/activity/course-name</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Launch & Media Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b">
-                        <Play className="h-5 w-5 text-foreground" />
-                        <h3 className="text-lg font-serif font-semibold">Launch & Media</h3>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="launchFile" className="text-sm font-medium flex items-center gap-2">
-                          Launch File
-                        </Label>
-                        <div className="relative">
-                          <FileText className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                          <Input
-                            id="launchFile"
-                            value={courseForm.launchFile}
-                            onChange={(e) => setCourseForm({ ...courseForm, launchFile: e.target.value })}
-                            placeholder="index_lms.html"
-                            className="pl-10 h-11"
-                          />
-                        </div>
-                        <p className="text-xs text-muted-foreground ml-1">Default: index_lms.html</p>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="space-y-2">
-                          <Label htmlFor="thumbnailUrl" className="text-sm font-medium flex items-center gap-2">
-                            Thumbnail Image URL
-                          </Label>
-                          <div className="flex gap-2">
-                            <div className="relative flex-1">
-                              <Image className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                          <div className="space-y-2">
+                            <Label htmlFor="thumbnailUrl">Thumbnail URL</Label>
+                            <div className="flex gap-2">
                               <Input
                                 id="thumbnailUrl"
-                                type="text"
                                 value={courseForm.thumbnailUrl}
                                 onChange={(e) => setCourseForm({ ...courseForm, thumbnailUrl: e.target.value })}
-                                placeholder="/course/course-folder/mobile/thumbnail.jpg"
-                                className="pl-10 h-11"
+                                placeholder="/course/folder/thumbnail.jpg"
+                                className="h-11"
                               />
-                            </div>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              onClick={async () => {
-                                if (!courseForm.blobPath) {
-                                  toast.error('Please enter course folder path first');
-                                  return;
-                                }
-                                try {
-                                  setLoading(true);
-                                  const response = await api.get(`/api/admin/find-thumbnail?coursePath=${encodeURIComponent(courseForm.blobPath)}`);
-                                  if (response.data.found && response.data.thumbnailUrl) {
-                                    setCourseForm({ ...courseForm, thumbnailUrl: response.data.thumbnailUrl });
-                                    toast.success(`Thumbnail found: ${response.data.thumbnailUrl}`);
-                                  } else {
-                                    toast.info(response.data.message || 'No thumbnail image found');
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={async () => {
+                                  if (!courseForm.blobPath) {
+                                    toast.error('Enter folder path first');
+                                    return;
                                   }
-                                } catch (err: any) {
-                                  toast.error(err.response?.data?.error || 'Failed to find thumbnail');
-                                } finally {
-                                  setLoading(false);
-                                }
-                              }}
-                              disabled={!courseForm.blobPath || loading}
-                              className="h-11 px-4"
-                            >
-                              <Image className="h-4 w-4 mr-2" />
-                              Find
-                            </Button>
+                                  try {
+                                    setLoading(true);
+                                    const response = await api.get(`/api/admin/find-thumbnail?coursePath=${encodeURIComponent(courseForm.blobPath)}`);
+                                    if (response.data.found) {
+                                      setCourseForm({ ...courseForm, thumbnailUrl: response.data.thumbnailUrl });
+                                      toast.success('Thumbnail found');
+                                    } else {
+                                      toast.info('No thumbnail found');
+                                    }
+                                  } catch {
+                                    toast.error('Failed to find');
+                                  } finally {
+                                    setLoading(false);
+                                  }
+                                }}
+                                disabled={!courseForm.blobPath || loading}
+                                className="h-11 px-4"
+                              >
+                                <Image className="h-4 w-4 mr-2" />
+                                Find
+                              </Button>
+                            </div>
                           </div>
                         </div>
-                        <div className="flex items-start gap-2 p-3 bg-muted/50 rounded-md border border-border/50 mt-3">
-                          <Info className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
-                          <p className="text-xs text-muted-foreground">
-                            Path to course thumbnail image. Click "Find" to auto-detect from course files, or enter manually.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
+                      </details>
 
-                    {/* Submit Button */}
-                    <div className="pt-4 border-t">
-                      <Button 
-                        type="submit" 
-                        className="w-full h-12 text-base font-semibold"
-                        disabled={loading}
-                      >
-                        {loading ? (
-                          <>
-                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
-                            {editingCourseId ? 'Updating Course...' : 'Creating Course...'}
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-5 w-5 mr-2" />
-                            {editingCourseId ? 'Update Course' : 'Create Course'}
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </form>
-                </CardContent>
-              </Card>
+                      {/* Submit */}
+                      <div className="flex gap-3 pt-2">
+                        <Button 
+                          type="submit" 
+                          className="flex-1 h-11"
+                          disabled={loading}
+                          style={{ backgroundColor: primaryColor }}
+                        >
+                          {loading ? (
+                            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            editingCourseId ? 'Update Course' : 'Create Course'
+                          )}
+                        </Button>
+                        <Button 
+                          type="button"
+                          variant="outline"
+                          className="h-11"
+                          onClick={() => {
+                            setShowCourseForm(false);
+                            setEditingCourseId(null);
+                            setCourseForm({
+                              title: '',
+                              description: '',
+                              thumbnailUrl: '',
+                              launchFile: 'index_lms.html',
+                              activityId: '',
+                              blobPath: '',
+                            });
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
               </motion.div>
             )}
 
-            {loading ? (
+            {loading && !showCourseForm ? (
               <div className="text-center py-16">
                 <div className="inline-flex items-center gap-2 text-muted-foreground">
                   <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                  <p className="text-lg font-serif">Loading courses...</p>
+                  <p className="text-lg">Loading courses...</p>
                 </div>
               </div>
             ) : (
-              <Card className="bg-muted/40 border-border">
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Title</TableHead>
-                        <TableHead>Activity ID</TableHead>
-                        <TableHead>Enrollments</TableHead>
-                        <TableHead>Attempts</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {courses.map((course) => (
-                        <TableRow key={course.courseId}>
-                          <TableCell className="font-medium">{course.title}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{course.activityId}</TableCell>
-                          <TableCell>{course.enrollmentCount}</TableCell>
-                          <TableCell>{course.attemptCount}</TableCell>
-                          <TableCell>
-                            <div className="flex gap-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleEditCourse(course)}
-                              >
-                                <Edit className="h-4 w-4 mr-1" />
-                                Edit
-                              </Button>
-                              <Button
-                                variant="destructive"
-                                size="sm"
-                                onClick={() => handleDeleteCourse(course.courseId)}
-                              >
-                                <Trash2 className="h-4 w-4 mr-1" />
-                                Delete
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {courses.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                            No courses available. Create your first course to get started.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+              >
+                <Card className="bg-muted/40 border-border shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="text-xl font-semibold flex items-center gap-2">
+                      <BookOpen className="h-5 w-5" style={{ color: primaryColor }} />
+                      All Courses
+                    </CardTitle>
+                    <CardDescription>
+                      Manage your courses and view enrollment data
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-gray-50 hover:bg-gray-50 dark:bg-muted/50">
+                            <TableHead className="font-semibold text-foreground">Title</TableHead>
+                            <TableHead className="font-semibold text-foreground">Activity ID</TableHead>
+                            <TableHead className="font-semibold text-foreground text-center">Enrollments</TableHead>
+                            <TableHead className="font-semibold text-foreground text-center">Attempts</TableHead>
+                            <TableHead className="font-semibold text-foreground">Actions</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {courses.map((course) => (
+                            <TableRow key={course.courseId} className="hover:bg-muted/50 transition-colors border-b border-border">
+                              <TableCell className="font-medium">{course.title}</TableCell>
+                              <TableCell className="text-muted-foreground max-w-[200px] truncate">{course.activityId}</TableCell>
+                              <TableCell className="text-center">{course.enrollmentCount}</TableCell>
+                              <TableCell className="text-center">{course.attemptCount}</TableCell>
+                              <TableCell>
+                                <div className="flex gap-2">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-9 w-9"
+                                    onClick={() => handleEditCourse(course)}
+                                    title="Edit"
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="destructive"
+                                    size="icon"
+                                    className="h-9 w-9"
+                                    onClick={() => handleDeleteCourse(course.courseId)}
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {courses.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={5} className="text-center text-muted-foreground py-12">
+                                No courses available. Create your first course to get started.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
             )}
           </div>
         </div>
 
-        {/* Delete Course Confirmation Dialog */}
+        {/* Delete Confirmation Dialog */}
         <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
           <AlertDialogContent className="max-w-md">
             <AlertDialogHeader>
@@ -585,28 +515,11 @@ export default function CourseManagement() {
                 </div>
                 <AlertDialogTitle className="text-xl">Delete Course</AlertDialogTitle>
               </div>
-              <AlertDialogDescription className="text-base pt-2">
-                Are you sure you want to delete this course? This action cannot be undone and will permanently remove:
+              <AlertDialogDescription className="text-base">
+                Are you sure you want to delete this course? This action cannot be undone.
               </AlertDialogDescription>
-              <div className="mt-4 p-4 bg-muted/50 rounded-lg border border-border/50 space-y-2">
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="h-1.5 w-1.5 rounded-full bg-destructive"></div>
-                  <span className="text-foreground">Course record and metadata</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="h-1.5 w-1.5 rounded-full bg-destructive"></div>
-                  <span className="text-foreground">All learner progress data</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="h-1.5 w-1.5 rounded-full bg-destructive"></div>
-                  <span className="text-foreground">Course enrollment information</span>
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground mt-4">
-                <strong>Note:</strong> Course files in Azure Blob Storage will remain, but the course will no longer be accessible in the LMS.
-              </p>
             </AlertDialogHeader>
-            <AlertDialogFooter className="gap-2 sm:gap-0">
+            <AlertDialogFooter>
               <AlertDialogCancel onClick={() => {
                 setDeleteDialogOpen(false);
                 setCourseToDelete(null);
@@ -618,7 +531,7 @@ export default function CourseManagement() {
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
-                Delete Course
+                Delete
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

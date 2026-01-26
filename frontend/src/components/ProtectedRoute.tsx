@@ -1,14 +1,31 @@
 import { Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { isAuthenticated, getUser, setUser } from '../services/auth';
+import { isAuthenticated, getUser, setUser, getDefaultLandingPath } from '../services/auth';
 import api from '../services/api';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
   requireAdmin?: boolean;
+  requireRole?: string | string[];
 }
 
-export default function ProtectedRoute({ children, requireAdmin = false }: ProtectedRouteProps) {
+function roleMatches(user: ReturnType<typeof getUser>, role: string): boolean {
+  if (!user) return false;
+
+  const isAdminUser = user.isAdmin || user.role === 'admin';
+  if (role === 'admin') return isAdminUser;
+
+  const flagName = `is${role.charAt(0).toUpperCase()}${role.slice(1)}`;
+  const hasFlag = (user as Record<string, boolean | undefined>)[flagName] === true;
+  const hasRoleField = user.role === role;
+  const hasRolesArray = Array.isArray((user as { roles?: string[] }).roles)
+    ? (user as { roles: string[] }).roles.includes(role)
+    : false;
+
+  return hasFlag || hasRoleField || hasRolesArray;
+}
+
+export default function ProtectedRoute({ children, requireAdmin = false, requireRole }: ProtectedRouteProps) {
   const [isChecking, setIsChecking] = useState(true);
   const [hasAccess, setHasAccess] = useState(false);
 
@@ -20,28 +37,31 @@ export default function ProtectedRoute({ children, requireAdmin = false }: Prote
         return;
       }
 
+      const requiredRoles: string[] = [];
+      if (requireRole) {
+        requiredRoles.push(...(Array.isArray(requireRole) ? requireRole : [requireRole]));
+      }
       if (requireAdmin) {
-        // Fetch fresh user data from backend to ensure isAdmin is up to date
+        requiredRoles.push('admin');
+      }
+
+      if (requiredRoles.length > 0) {
+        // Fetch fresh user data from backend to ensure roles are up to date
         try {
           const response = await api.get('/api/auth/me');
           const user = response.data.user;
           
           // Update localStorage with fresh user data
           setUser(user);
-          
-          if (user.isAdmin) {
-            setHasAccess(true);
-          } else {
-            setHasAccess(false);
-          }
+          const isAdminUser = user.isAdmin || user.role === 'admin';
+          const hasRole = isAdminUser || requiredRoles.some((role) => roleMatches(user, role));
+          setHasAccess(hasRole);
         } catch (error) {
           // If API call fails, check localStorage as fallback
           const user = getUser();
-          if (user?.isAdmin) {
-            setHasAccess(true);
-          } else {
-            setHasAccess(false);
-          }
+          const isAdminUser = user?.isAdmin || user?.role === 'admin';
+          const hasRole = isAdminUser || requiredRoles.some((role) => roleMatches(user, role));
+          setHasAccess(!!hasRole);
         }
       } else {
         setHasAccess(true);
@@ -51,7 +71,7 @@ export default function ProtectedRoute({ children, requireAdmin = false }: Prote
     }
 
     checkAccess();
-  }, [requireAdmin]);
+  }, [requireAdmin, requireRole]);
 
   if (isChecking) {
     return (
@@ -68,8 +88,8 @@ export default function ProtectedRoute({ children, requireAdmin = false }: Prote
     return <Navigate to="/login" replace />;
   }
 
-  if (requireAdmin && !hasAccess) {
-    return <Navigate to="/courses" replace />;
+  if ((requireAdmin || requireRole) && !hasAccess) {
+    return <Navigate to={getDefaultLandingPath()} replace />;
   }
 
   return <>{children}</>;

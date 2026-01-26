@@ -280,6 +280,66 @@ export async function getCourseProgress(courseId) {
   return progressList;
 }
 
+/**
+ * Get progress for a specific course with pagination
+ * @param {string} courseId
+ * @param {Object} options - { limit, continuationToken }
+ * @returns {{ data: Array, continuationToken: string|null, hasMore: boolean }}
+ */
+export async function getCourseProgressPage(courseId, options = {}) {
+  if (!courseId) {
+    return { data: [], continuationToken: null, hasMore: false };
+  }
+
+  const client = getTableClient('USER_PROGRESS');
+  const progressList = [];
+  const limit = Math.min(options.limit || MAX_PROGRESS_PAGE_SIZE, MAX_PROGRESS_PAGE_SIZE);
+
+  try {
+    const filter = buildODataEqFilter('RowKey', courseId);
+    const listEntities = client.listEntities({ queryOptions: { filter } });
+    const pageIterator = listEntities.byPage({
+      maxPageSize: limit,
+      continuationToken: options.continuationToken || undefined
+    });
+
+    const page = await pageIterator.next();
+
+    if (!page.done && page.value) {
+      for (const entity of page.value) {
+        progressList.push({
+          userId: entity.partitionKey,
+          courseId: entity.rowKey,
+          enrollmentStatus: entity.enrollmentStatus || 'not_enrolled',
+          completionStatus: entity.completionStatus || 'not_started',
+          score: entity.score !== undefined ? entity.score : null,
+          progressPercent: entity.progressPercent !== undefined ? entity.progressPercent : null,
+          timeSpent: entity.timeSpent || 0,
+          attempts: entity.attempts || 0,
+          enrolledAt: entity.enrolledAt || null,
+          startedAt: entity.startedAt || null,
+          completedAt: entity.completedAt || null,
+          lastAccessedAt: entity.lastAccessedAt || null,
+          updatedAt: entity.updatedAt || null
+        });
+      }
+
+      const nextToken = page.value.continuationToken || null;
+
+      return {
+        data: progressList,
+        continuationToken: nextToken,
+        hasMore: !!nextToken
+      };
+    }
+  } catch (error) {
+    logger.error({ courseId, error: error.message }, 'Error getting course progress page');
+    return { data: [], continuationToken: null, hasMore: false };
+  }
+
+  return { data: progressList, continuationToken: null, hasMore: false };
+}
+
 // ============================================================================
 // Progress Calculation from xAPI Statements
 // ============================================================================
@@ -347,7 +407,7 @@ export async function calculateProgressFromStatements(userId, courseId, activity
     // Normalize userId to email format for xAPI query
     const userEmail = userId.includes('@') ? userId : `${userId}@example.com`;
     
-    // Query ALL xAPI statements for this user
+    // Query xAPI statements for this user and course
     const allStatements = [];
     let cursor = null;
     
@@ -357,6 +417,7 @@ export async function calculateProgressFromStatements(userId, courseId, activity
           objectType: 'Agent',
           mbox: `mailto:${userEmail}`
         },
+        activityBase: activityId,
         registration: registration || undefined,
         limit: 200,
         cursor: cursor || undefined
@@ -377,7 +438,7 @@ export async function calculateProgressFromStatements(userId, courseId, activity
       return null;
     }
     
-    // Filter statements for this course
+    // Filter statements for this course (defensive; activityBase should already scope it)
     const statements = allStatements.filter(s => {
       const objectId = s.object?.id || '';
       return objectId === activityId || objectId.startsWith(activityId + '/');

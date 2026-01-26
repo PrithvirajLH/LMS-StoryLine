@@ -181,15 +181,18 @@
   }
 
   /* Custom spacing utilities for macro whitespace */
+  /* NOTE: Adjust these values based on navigation style:
+     - NowBar: Use larger padding (7.5rem) since content has full width
+     - Sidebar: Use smaller padding (2.5rem) since sidebar takes space */
   .macro-padding {
-    padding-left: 7.5rem; /* 120px */
-    padding-right: 7.5rem;
+    padding-left: 2.5rem; /* 40px - for sidebar layout */
+    padding-right: 2.5rem;
   }
 
-  @media (max-width: 1024px) {
+  @media (max-width: 768px) {
     .macro-padding {
-      padding-left: 2rem;
-      padding-right: 2rem;
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
     }
   }
 }

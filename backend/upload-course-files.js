@@ -12,6 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const XAPI_FOLDER = path.join(__dirname, '../xapi');
+const COURSE_FOLDER_NAME = process.env.COURSE_FOLDER_NAME || '';
 
 async function uploadDirectory(dirPath, blobPrefix = '') {
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
@@ -23,7 +24,8 @@ async function uploadDirectory(dirPath, blobPrefix = '') {
     const fullPath = path.join(dirPath, entry.name);
     // If blobPrefix is empty and we have a course folder, use it
     const basePrefix = blobPrefix || (COURSE_FOLDER_NAME ? `${COURSE_FOLDER_NAME}/` : '');
-    const blobPath = basePrefix ? `${basePrefix}${entry.name}`.replace(/\/+/g, '/') : entry.name;
+    const normalizedPrefix = basePrefix && !basePrefix.endsWith('/') ? `${basePrefix}/` : basePrefix;
+    const blobPath = normalizedPrefix ? `${normalizedPrefix}${entry.name}`.replace(/\/+/g, '/') : entry.name;
 
     if (entry.isDirectory()) {
       // Recursively upload subdirectories
@@ -115,4 +117,3 @@ async function main() {
 }
 
 main();
-

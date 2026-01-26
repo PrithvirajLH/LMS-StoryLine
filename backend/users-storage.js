@@ -9,9 +9,98 @@ dotenv.config();
 
 import { getTableClient, retryOperation, TABLES, sanitizeODataValue, buildODataEqFilter } from './azure-tables.js';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { storageLogger as logger } from './logger.js';
 
 const USERS_TABLE = 'Users';
+const ROLE_ALIASES = {
+  coach: ['instructionalCoach'],
+  coordinator: ['learningCoordinator'],
+  corporate: ['hr']
+};
+
+function getUserPartitionKey(email) {
+  if (!email) return 'user_unknown';
+  const normalized = email.toLowerCase().trim();
+  const hash = crypto.createHash('sha256').update(normalized).digest('hex');
+  return `user_${hash.substring(0, 2)}`;
+}
+
+function parseRolesValue(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed.filter(Boolean);
+      } catch (error) {
+        // fall through to comma split
+      }
+    }
+    return trimmed.split(',').map((role) => role.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeRoles(role, rolesValue) {
+  const roles = parseRolesValue(rolesValue);
+  if (role) roles.push(role);
+  return Array.from(new Set(roles.filter(Boolean)));
+}
+
+function coerceBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value > 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  return false;
+}
+
+function hasRole(roles, role) {
+  if (roles.includes(role)) return true;
+  const aliases = ROLE_ALIASES[role] || [];
+  return aliases.some((alias) => roles.includes(alias));
+}
+
+function buildRoleFlags(roles, entity = {}) {
+  return {
+    isAdmin: hasRole(roles, 'admin') || coerceBoolean(entity.isAdmin),
+    isManager: hasRole(roles, 'manager') || coerceBoolean(entity.isManager),
+    isCoordinator: hasRole(roles, 'coordinator') || coerceBoolean(entity.isCoordinator) || coerceBoolean(entity.isLearningCoordinator),
+    isLearningCoordinator: hasRole(roles, 'learningCoordinator') || coerceBoolean(entity.isLearningCoordinator),
+    isCoach: hasRole(roles, 'coach') || coerceBoolean(entity.isCoach) || coerceBoolean(entity.isInstructionalCoach),
+    isInstructionalCoach: hasRole(roles, 'instructionalCoach') || coerceBoolean(entity.isInstructionalCoach),
+    isCorporate: hasRole(roles, 'corporate') || coerceBoolean(entity.isCorporate) || coerceBoolean(entity.isHr) || coerceBoolean(entity.isHR),
+    isHr: hasRole(roles, 'hr') || coerceBoolean(entity.isHr) || coerceBoolean(entity.isHR),
+    isLearner: hasRole(roles, 'learner') || coerceBoolean(entity.isLearner)
+  };
+}
+
+function mapEntityToUser(entity) {
+  const roles = normalizeRoles(entity.role || 'learner', entity.roles);
+  const roleFlags = buildRoleFlags(roles, entity);
+
+  return {
+    id: entity.userId || entity.rowKey,
+    userId: entity.userId || entity.rowKey,
+    email: entity.email,
+    name: entity.name,
+    firstName: entity.firstName || (entity.name?.split(' ')[0] || entity.name),
+    lastName: entity.lastName || (entity.name?.split(' ').slice(1).join(' ') || ''),
+    password: entity.password,
+    role: entity.role || 'learner',
+    roles,
+    providerId: entity.providerId || null,
+    createdAt: entity.createdAt,
+    updatedAt: entity.updatedAt,
+    ...roleFlags
+  };
+}
 
 // ============================================================================
 // Default Admin Configuration - Use Environment Variables
@@ -53,23 +142,22 @@ export async function getUserByEmail(email) {
   }
   
   const client = getTableClient('USERS');
-  const partitionKey = 'user'; // Single partition for all users
+  const partitionKey = getUserPartitionKey(email);
+  const legacyPartitionKey = 'user'; // Legacy single partition
   const rowKey = email.toLowerCase().trim(); // Use email as row key (normalized to lowercase)
   
   try {
-    const entity = await client.getEntity(partitionKey, rowKey);
-    return {
-      id: entity.userId || entity.rowKey,
-      userId: entity.userId || entity.rowKey,
-      email: entity.email,
-      name: entity.name,
-      firstName: entity.firstName || (entity.name?.split(' ')[0] || entity.name),
-      lastName: entity.lastName || (entity.name?.split(' ').slice(1).join(' ') || ''),
-      password: entity.password, // Hashed password
-      role: entity.role || 'learner',
-      createdAt: entity.createdAt,
-      updatedAt: entity.updatedAt
-    };
+    let entity;
+    try {
+      entity = await client.getEntity(partitionKey, rowKey);
+    } catch (error) {
+      if ((error.statusCode === 404 || error.code === 'ResourceNotFound') && partitionKey !== legacyPartitionKey) {
+        entity = await client.getEntity(legacyPartitionKey, rowKey);
+      } else {
+        throw error;
+      }
+    }
+    return mapEntityToUser(entity);
   } catch (error) {
     if (error.statusCode === 404 || error.code === 'ResourceNotFound') {
       return null;
@@ -97,18 +185,7 @@ export async function getUserById(userId) {
     });
     
     for await (const entity of iterator) {
-      return {
-        id: entity.userId || entity.rowKey,
-        userId: entity.userId || entity.rowKey,
-        email: entity.email,
-        name: entity.name,
-        firstName: entity.firstName || (entity.name?.split(' ')[0] || entity.name),
-        lastName: entity.lastName || (entity.name?.split(' ').slice(1).join(' ') || ''),
-        password: entity.password,
-        role: entity.role || 'learner',
-        createdAt: entity.createdAt,
-        updatedAt: entity.updatedAt
-      };
+      return mapEntityToUser(entity);
     }
     
     return null;
@@ -127,7 +204,8 @@ export async function saveUser(user) {
   }
   
   const client = getTableClient('USERS');
-  const partitionKey = 'user';
+  const partitionKey = getUserPartitionKey(user.email);
+  const legacyPartitionKey = 'user';
   const rowKey = user.email.toLowerCase().trim(); // Normalize email to lowercase
   
   // Generate userId if not provided
@@ -146,6 +224,8 @@ export async function saveUser(user) {
     fullName = user.email.split('@')[0];
   }
 
+  const roles = normalizeRoles(user.role || 'learner', user.roles);
+
   const entity = {
     partitionKey: partitionKey,
     rowKey: rowKey,
@@ -156,12 +236,39 @@ export async function saveUser(user) {
     lastName: user.lastName?.trim() || (fullName?.split(' ').slice(1).join(' ') || ''),
     password: user.password, // Should be hashed
     role: user.role || 'learner',
+    roles: JSON.stringify(roles),
+    providerId: user.providerId || null,
+    isAdmin: user.isAdmin,
+    isManager: user.isManager,
+    isCoordinator: user.isCoordinator,
+    isLearningCoordinator: user.isLearningCoordinator,
+    isCoach: user.isCoach,
+    isInstructionalCoach: user.isInstructionalCoach,
+    isCorporate: user.isCorporate,
+    isHr: user.isHr,
+    isLearner: user.isLearner,
     createdAt: user.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
+
+  Object.keys(entity).forEach((key) => {
+    if (entity[key] === undefined) {
+      delete entity[key];
+    }
+  });
   
   await retryOperation(() => client.upsertEntity(entity, 'Replace'));
   
+  if (partitionKey !== legacyPartitionKey) {
+    try {
+      await client.deleteEntity(legacyPartitionKey, rowKey);
+    } catch (error) {
+      if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
+        throw error;
+      }
+    }
+  }
+
   logger.debug({ email: entity.email, role: entity.role }, 'User saved');
   
   return entity;
@@ -176,18 +283,7 @@ export async function getAllUsers() {
   
   try {
     for await (const entity of client.listEntities()) {
-      users.push({
-        id: entity.userId || entity.rowKey,
-        userId: entity.userId || entity.rowKey,
-        email: entity.email,
-        name: entity.name,
-        firstName: entity.name?.split(' ')[0] || entity.name,
-        lastName: entity.name?.split(' ').slice(1).join(' ') || '',
-        role: entity.role || 'learner',
-        isAdmin: entity.role === 'admin',
-        createdAt: entity.createdAt,
-        updatedAt: entity.updatedAt
-      });
+      users.push(mapEntityToUser(entity));
     }
   } catch (error) {
     logger.error({ error: error.message }, 'Error getting all users');
@@ -206,11 +302,21 @@ export async function deleteUser(email) {
   }
   
   const client = getTableClient('USERS');
-  const partitionKey = 'user';
+  const partitionKey = getUserPartitionKey(email);
+  const legacyPartitionKey = 'user';
   const rowKey = email.toLowerCase().trim();
   
   try {
     await client.deleteEntity(partitionKey, rowKey);
+    if (partitionKey !== legacyPartitionKey) {
+      try {
+        await client.deleteEntity(legacyPartitionKey, rowKey);
+      } catch (error) {
+        if (error.statusCode !== 404 && error.code !== 'ResourceNotFound') {
+          throw error;
+        }
+      }
+    }
     logger.info({ email }, 'User deleted');
     return true;
   } catch (error) {

@@ -121,6 +121,7 @@ export default function CourseCard({ course, onEnroll, onClick, variant = 'defau
             </div>
           )}
         </div>
+
       </motion.div>
     );
   }
@@ -197,7 +198,7 @@ export default function CourseCard({ course, onEnroll, onClick, variant = 'defau
         <div className={course.isEnrolled ? "mt-auto" : "mt-2"}>
           {course.isEnrolled ? (
             <Link
-              to={`/player/${course.courseId}`}
+              to={`/learner/player/${course.courseId}`}
               onClick={(e) => e.stopPropagation()}
               className="inline-flex items-center justify-center w-full px-6 py-3 rounded-lg text-base font-semibold text-white bg-gradient-brand shadow-md hover:shadow-lg hover:shadow-primary/25 hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200"
             >

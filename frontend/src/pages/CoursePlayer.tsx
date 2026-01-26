@@ -148,7 +148,7 @@ const CoursePlayer = () => {
             )}
           </div>
           <div className="space-y-2">
-            <Button onClick={() => navigate("/courses")} className="w-full">
+            <Button onClick={() => navigate("/learner/courses")} className="w-full">
               Back to Courses
             </Button>
             <Button 
@@ -203,7 +203,7 @@ const CoursePlayer = () => {
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-bold mb-4">Course not found</h1>
-          <Button onClick={() => navigate("/courses")}>Back to Courses</Button>
+          <Button onClick={() => navigate("/learner/courses")}>Back to Courses</Button>
         </div>
       </div>
     );
@@ -284,7 +284,7 @@ const CoursePlayer = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => navigate("/courses")}
+                  onClick={() => navigate("/learner/courses")}
                   className="mb-4 text-foreground/70 hover:text-foreground"
                 >
                   <ArrowLeft className="h-3 w-3 mr-1.5" />
@@ -374,7 +374,7 @@ const CoursePlayer = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => navigate("/courses")}
+                onClick={() => navigate("/learner/courses")}
                 className="flex-shrink-0"
               >
                 <ArrowLeft className="h-4 w-4" />

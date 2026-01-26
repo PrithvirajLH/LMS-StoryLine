@@ -10,8 +10,15 @@ dotenv.config();
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import * as usersStorage from './users-storage.js';
+import * as lockouts from './auth-lockouts.js';
 import { authLogger as logger } from './logger.js';
 import { AuthenticationError, ValidationError, ConflictError } from './errors.js';
+
+const ROLE_ALIASES = {
+  coach: ['instructionalCoach'],
+  coordinator: ['learningCoordinator'],
+  corporate: ['hr']
+};
 
 // ============================================================================
 // Configuration - CRITICAL: JWT_SECRET must be set in production
@@ -44,57 +51,116 @@ const REQUIRE_PASSWORD_COMPLEXITY = process.env.REQUIRE_PASSWORD_COMPLEXITY !== 
 const MAX_FAILED_ATTEMPTS = parseInt(process.env.MAX_FAILED_ATTEMPTS || '5', 10);
 const LOCKOUT_DURATION_MS = parseInt(process.env.LOCKOUT_DURATION_MINUTES || '15', 10) * 60 * 1000;
 
-// In-memory store for failed login attempts (consider Redis for multi-instance deployments)
-const failedAttempts = new Map(); // email -> { count, lockoutUntil }
+function normalizeRoles(user) {
+  const roles = Array.isArray(user?.roles) ? user.roles : [];
+  const role = user?.role || 'learner';
+  return Array.from(new Set([...roles, role].filter(Boolean)));
+}
+
+function hasRole(roles, role) {
+  if (roles.includes(role)) return true;
+  const aliases = ROLE_ALIASES[role] || [];
+  return aliases.some((alias) => roles.includes(alias));
+}
+
+function buildRoleFlags(roles, user = {}) {
+  return {
+    isAdmin: hasRole(roles, 'admin') || user.isAdmin === true,
+    isManager: hasRole(roles, 'manager') || user.isManager === true,
+    isCoordinator: hasRole(roles, 'coordinator') || user.isCoordinator === true || user.isLearningCoordinator === true,
+    isLearningCoordinator: hasRole(roles, 'learningCoordinator') || user.isLearningCoordinator === true,
+    isCoach: hasRole(roles, 'coach') || user.isCoach === true || user.isInstructionalCoach === true,
+    isInstructionalCoach: hasRole(roles, 'instructionalCoach') || user.isInstructionalCoach === true,
+    isCorporate: hasRole(roles, 'corporate') || user.isCorporate === true || user.isHr === true,
+    isHr: hasRole(roles, 'hr') || user.isHr === true,
+    isLearner: hasRole(roles, 'learner') || user.isLearner === true
+  };
+}
+
+export function buildAuthUser(user) {
+  const roles = normalizeRoles(user);
+  const roleFlags = buildRoleFlags(roles, user);
+
+  return {
+    id: user.id,
+    userId: user.userId || user.id,
+    email: user.email,
+    name: user.name,
+    firstName: user.firstName || (user.name?.split(' ')[0] || user.name),
+    lastName: user.lastName || (user.name?.split(' ').slice(1).join(' ') || ''),
+    role: user.role || 'learner',
+    roles,
+    providerId: user.providerId || null,
+    ...roleFlags
+  };
+}
 
 /**
  * Check if account is locked
  */
-function checkAccountLockout(email) {
+async function checkAccountLockout(email) {
   const normalizedEmail = email.toLowerCase().trim();
-  const record = failedAttempts.get(normalizedEmail);
-  
-  if (!record) return false;
-  
-  // Check if lockout has expired
-  if (record.lockoutUntil && Date.now() < record.lockoutUntil) {
-    const remainingMinutes = Math.ceil((record.lockoutUntil - Date.now()) / 60000);
-    throw new AuthenticationError(`Account locked. Try again in ${remainingMinutes} minute(s)`);
+
+  try {
+    const record = await lockouts.getLockout(normalizedEmail);
+    if (!record) return false;
+
+    const lockoutUntilMs = record.lockoutUntil ? new Date(record.lockoutUntil).getTime() : null;
+    if (lockoutUntilMs && Date.now() < lockoutUntilMs) {
+      const remainingMinutes = Math.ceil((lockoutUntilMs - Date.now()) / 60000);
+      throw new AuthenticationError(`Account locked. Try again in ${remainingMinutes} minute(s)`);
+    }
+
+    if (lockoutUntilMs && Date.now() >= lockoutUntilMs) {
+      await lockouts.clearLockout(normalizedEmail);
+    }
+  } catch (error) {
+    if (error instanceof AuthenticationError) {
+      throw error;
+    }
+    logger.warn({ error: error.message }, 'Lockout check failed; continuing without lockout');
   }
-  
-  // Clear expired lockout
-  if (record.lockoutUntil && Date.now() >= record.lockoutUntil) {
-    failedAttempts.delete(normalizedEmail);
-  }
-  
+
   return false;
 }
 
 /**
  * Record a failed login attempt
  */
-function recordFailedAttempt(email) {
+async function recordFailedAttempt(email) {
   const normalizedEmail = email.toLowerCase().trim();
-  const record = failedAttempts.get(normalizedEmail) || { count: 0, lockoutUntil: null };
-  
-  record.count++;
-  record.lastAttempt = Date.now();
-  
-  if (record.count >= MAX_FAILED_ATTEMPTS) {
-    record.lockoutUntil = Date.now() + LOCKOUT_DURATION_MS;
-    logger.warn({ email: normalizedEmail, lockoutUntil: new Date(record.lockoutUntil).toISOString() }, 
-      'Account locked due to too many failed attempts');
+
+  try {
+    const record = await lockouts.getLockout(normalizedEmail);
+    const count = (record?.failedAttempts || 0) + 1;
+    const lockoutUntil = count >= MAX_FAILED_ATTEMPTS
+      ? new Date(Date.now() + LOCKOUT_DURATION_MS).toISOString()
+      : record?.lockoutUntil || null;
+
+    await lockouts.upsertLockout(normalizedEmail, {
+      failedAttempts: count,
+      lockoutUntil,
+      lastAttempt: new Date().toISOString()
+    });
+
+    if (lockoutUntil && count >= MAX_FAILED_ATTEMPTS) {
+      logger.warn({ email: normalizedEmail, lockoutUntil }, 'Account locked due to too many failed attempts');
+    }
+  } catch (error) {
+    logger.warn({ error: error.message }, 'Failed to record lockout state');
   }
-  
-  failedAttempts.set(normalizedEmail, record);
 }
 
 /**
  * Clear failed attempts on successful login
  */
-function clearFailedAttempts(email) {
+async function clearFailedAttempts(email) {
   const normalizedEmail = email.toLowerCase().trim();
-  failedAttempts.delete(normalizedEmail);
+  try {
+    await lockouts.clearLockout(normalizedEmail);
+  } catch (error) {
+    logger.warn({ error: error.message }, 'Failed to clear lockout state');
+  }
 }
 
 // Initialize default admin user on module load
@@ -182,11 +248,16 @@ export function generateToken(user) {
     throw new ValidationError('User email is required for token generation');
   }
   
+  const roles = normalizeRoles(user);
+  const roleFlags = buildRoleFlags(roles, user);
+
   const payload = {
     userId: user.id || user.userId,
     email: user.email.toLowerCase(),
     name: user.name,
-    role: user.role || 'learner'
+    role: user.role || 'learner',
+    roles,
+    ...roleFlags
   };
   
   return jwt.sign(payload, EFFECTIVE_JWT_SECRET, { 
@@ -273,32 +344,18 @@ export async function register(email, password, name, firstName, lastName) {
   };
 
   // Save to Azure Table Storage
-  const savedUser = await usersStorage.saveUser(userData);
+  await usersStorage.saveUser(userData);
+  const savedUser = await usersStorage.getUserByEmail(normalizedEmail);
   
   logger.info({ email: normalizedEmail }, 'New user registered');
   
-  const user = {
-    id: savedUser.userId,
-    userId: savedUser.userId,
-    email: savedUser.email,
-    name: savedUser.name,
-    firstName: savedUser.firstName,
-    lastName: savedUser.lastName,
-    role: savedUser.role
-  };
+  if (!savedUser) {
+    throw new Error('Failed to load newly created user');
+  }
 
   return { 
-    user: { 
-      id: user.id,
-      userId: user.id,
-      email: user.email, 
-      name: user.name,
-      firstName: user.firstName || (user.name?.split(' ')[0] || user.name),
-      lastName: user.lastName || (user.name?.split(' ').slice(1).join(' ') || ''),
-      role: user.role,
-      isAdmin: user.role === 'admin'
-    }, 
-    token: generateToken(user) 
+    user: buildAuthUser(savedUser),
+    token: generateToken(savedUser) 
   };
 }
 
@@ -314,45 +371,46 @@ export async function login(email, password) {
   }
   
   // Check account lockout BEFORE checking credentials
-  checkAccountLockout(normalizedEmail);
+  await checkAccountLockout(normalizedEmail);
   
   const user = await usersStorage.getUserByEmail(normalizedEmail);
   if (!user) {
     // Record failed attempt even for non-existent users (prevent enumeration)
-    recordFailedAttempt(normalizedEmail);
+    await recordFailedAttempt(normalizedEmail);
     // Use generic message to prevent user enumeration
     throw new AuthenticationError('Invalid credentials');
   }
 
   const isValid = await verifyPassword(password, user.password);
   if (!isValid) {
-    recordFailedAttempt(normalizedEmail);
+    await recordFailedAttempt(normalizedEmail);
     logger.warn({ email: normalizedEmail }, 'Failed login attempt');
     throw new AuthenticationError('Invalid credentials');
   }
   
   // Successful login - clear any failed attempts
-  clearFailedAttempts(normalizedEmail);
+  await clearFailedAttempts(normalizedEmail);
 
   logger.info({ email: normalizedEmail }, 'User logged in');
 
   return {
-    user: { 
-      id: user.id, 
-      userId: user.userId || user.id,
-      email: user.email, 
-      name: user.name,
-      firstName: user.firstName || (user.name?.split(' ')[0] || user.name),
-      lastName: user.lastName || (user.name?.split(' ').slice(1).join(' ') || ''),
-      role: user.role,
-      isAdmin: user.role === 'admin'
-    },
+    user: buildAuthUser(user),
     token: generateToken({
       id: user.id,
       userId: user.userId || user.id,
       email: user.email,
       name: user.name,
-      role: user.role
+      role: user.role,
+      roles: user.roles,
+      isAdmin: user.isAdmin,
+      isManager: user.isManager,
+      isCoordinator: user.isCoordinator,
+      isLearningCoordinator: user.isLearningCoordinator,
+      isCoach: user.isCoach,
+      isInstructionalCoach: user.isInstructionalCoach,
+      isCorporate: user.isCorporate,
+      isHr: user.isHr,
+      isLearner: user.isLearner
     })
   };
 }
@@ -369,13 +427,7 @@ export async function getUserById(userId) {
   if (!user) {
     return null;
   }
-  return { 
-    id: user.id, 
-    userId: user.userId || user.id,
-    email: user.email, 
-    name: user.name, 
-    role: user.role 
-  };
+  return buildAuthUser(user);
 }
 
 /**

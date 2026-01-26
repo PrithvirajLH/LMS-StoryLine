@@ -28,6 +28,8 @@ export interface User {
   lastName?: string;
   isAdmin: boolean;
   role?: string;
+  roles?: string[];
+  providerId?: string | null;
 }
 
 // Cookie name for CSRF token (matches backend)
@@ -115,6 +117,48 @@ export function isAuthenticated(): boolean {
 export function isAdmin(): boolean {
   const user = getUser();
   return user?.isAdmin || user?.role === 'admin' || false;
+}
+
+function hasRole(user: User | null, role: string): boolean {
+  if (!user) return false;
+
+  const isAdminUser = user.isAdmin || user.role === 'admin';
+  if (role === 'admin') return isAdminUser;
+
+  const flagName = `is${role.charAt(0).toUpperCase()}${role.slice(1)}`;
+  const hasFlag = (user as Record<string, boolean | undefined>)[flagName] === true;
+  const hasRoleField = user.role === role;
+  const hasRolesArray = Array.isArray(user.roles) ? user.roles.includes(role) : false;
+
+  return hasFlag || hasRoleField || hasRolesArray;
+}
+
+function hasAnyRole(user: User | null, roles: string[]): boolean {
+  return roles.some((role) => hasRole(user, role));
+}
+
+export function getDefaultLandingPath(user: User | null = getUser()): string {
+  if (hasRole(user, 'admin')) {
+    return '/admin/dashboard';
+  }
+
+  if (hasAnyRole(user, ['corporate', 'hr'])) {
+    return '/corporate/dashboard';
+  }
+
+  if (hasAnyRole(user, ['coach', 'instructionalCoach'])) {
+    return '/coach/dashboard';
+  }
+
+  if (hasAnyRole(user, ['coordinator', 'learningCoordinator'])) {
+    return '/coordinator/dashboard';
+  }
+
+  if (hasRole(user, 'manager')) {
+    return '/manager/dashboard';
+  }
+
+  return '/learner/dashboard';
 }
 
 /**

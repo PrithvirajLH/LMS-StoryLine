@@ -93,18 +93,25 @@ const ProgressDashboard = () => {
     c && (c.completionStatus === 'completed' || c.completionStatus === 'passed')
   );
 
-  const inProgressCourses = enrolledCourses
-    .filter(c => 
-      c.completionStatus === 'in_progress' && 
-      (c.progressPercent || 0) > 0 && 
-      (c.progressPercent || 0) < 100
-    )
+  // Courses to continue - both enrolled (not started) and in-progress (started but not completed)
+  const continueCourses = enrolledCourses
+    .filter(c => {
+      const isCompleted = c.completionStatus === 'completed' || c.completionStatus === 'passed';
+      return !isCompleted; // Include all non-completed courses
+    })
     .sort((a, b) => {
-      // Sort by latest watched (most recent first)
-      // Use startedAt if available, otherwise fall back to enrolledAt
+      // Sort by progress (in-progress first, then by most recent)
+      const progressA = a.progressPercent || 0;
+      const progressB = b.progressPercent || 0;
+      
+      // Courses with progress come first
+      if (progressA > 0 && progressB === 0) return -1;
+      if (progressB > 0 && progressA === 0) return 1;
+      
+      // Then sort by latest activity (most recent first)
       const dateA = a.startedAt ? new Date(a.startedAt).getTime() : new Date(a.enrolledAt).getTime();
       const dateB = b.startedAt ? new Date(b.startedAt).getTime() : new Date(b.enrolledAt).getTime();
-      return dateB - dateA; // Descending order (most recent first)
+      return dateB - dateA;
     });
 
   // Group courses by category with statistics
@@ -172,7 +179,7 @@ const ProgressDashboard = () => {
         <HeroStatement />
 
         <div className="flex-1 overflow-y-auto">
-          <div className="macro-padding pb-24">
+          <div className="macro-padding pb-8">
             {error && (
               <div className="bg-destructive/10 text-destructive p-4 rounded-lg mb-6 border border-destructive/20 text-lg font-serif">
                 {error}
@@ -249,28 +256,30 @@ const ProgressDashboard = () => {
                 )}
 
                 {/* Current Activity - Largest Visual Weight */}
-                {inProgressCourses.length > 0 && (
+                {continueCourses.length > 0 && (
                   <div className="mb-24">
                     <div className="flex items-center justify-between mb-8">
                       <div>
                         <h2 className="text-4xl font-serif font-semibold text-foreground mb-2">Continue Learning</h2>
-                        <p className="text-lg text-muted-foreground font-serif">Pick up where you left off</p>
+                        <p className="text-lg text-muted-foreground font-serif">Your enrolled and in-progress courses</p>
                       </div>
                       <Button variant="ghost" size="sm" asChild>
-                        <Link to="/courses">View All <ArrowRight className="h-4 w-4 ml-1" /></Link>
+                        <Link to="/learner/courses">View All <ArrowRight className="h-4 w-4 ml-1" /></Link>
                       </Button>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                      {inProgressCourses.slice(0, 4).map((course) => {
+                      {continueCourses.slice(0, 4).map((course) => {
                         if (!course) return null;
                         const progress = course.progressPercent !== undefined && course.progressPercent !== null
                           ? Math.max(0, Math.min(100, Number(course.progressPercent)))
                           : (course.score ? Math.max(0, Math.min(100, Number(course.score))) : 0);
                         
+                        const isInProgress = progress > 0;
+                        
                         return (
                           <Link
                             key={course.courseId}
-                            to={`/player/${course.courseId}`}
+                            to={`/learner/player/${course.courseId}`}
                             className="group"
                           >
                             <motion.div
@@ -297,9 +306,13 @@ const ProgressDashboard = () => {
                                 <div className="absolute top-3 right-3 z-10">
                                   <Badge
                                     variant="secondary"
-                                    className="text-xs font-semibold shadow-lg backdrop-blur-md bg-primary/90 text-primary-foreground border-primary/50"
+                                    className={`text-xs font-semibold shadow-lg backdrop-blur-md ${
+                                      isInProgress
+                                        ? "bg-primary/90 text-primary-foreground border-primary/50"
+                                        : "bg-muted/90 text-foreground border-border/80"
+                                    }`}
                                   >
-                                    In Progress
+                                    {isInProgress ? "In Progress" : "Enrolled"}
                                   </Badge>
                                 </div>
                               </div>
@@ -327,11 +340,11 @@ const ProgressDashboard = () => {
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
-                                    window.location.href = `/player/${course.courseId}`;
+                                    window.location.href = `/learner/player/${course.courseId}`;
                                   }}
                                   className="w-full h-11 text-base font-medium transition-all duration-200 bg-foreground text-background hover:bg-foreground/90 shadow-sm hover:shadow-md"
                                 >
-                                  Continue Learning
+                                  {isInProgress ? "Continue Learning" : "Start Learning"}
                                 </Button>
                               </div>
                             </motion.div>
@@ -363,7 +376,7 @@ const ProgressDashboard = () => {
                         return (
                           <Link
                             key={course.courseId}
-                            to={`/player/${course.courseId}`}
+                            to={`/learner/player/${course.courseId}`}
                             className="group "
                           >
                             <motion.div
@@ -432,7 +445,7 @@ const ProgressDashboard = () => {
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
-                                    window.location.href = `/player/${course.courseId}`;
+                                    window.location.href = `/learner/player/${course.courseId}`;
                                   }}
                                   className={`w-full h-11 text-base font-medium transition-all duration-200 ${
                                     isCompleted
@@ -463,7 +476,7 @@ const ProgressDashboard = () => {
                       You haven't enrolled in any courses yet. Browse our catalog to find courses that interest you.
                     </p>
                     <Button size="lg" asChild>
-                      <Link to="/courses">
+                      <Link to="/learner/courses">
                         <BookOpen className="h-4 w-4 mr-2" />
                         Browse Courses
                       </Link>

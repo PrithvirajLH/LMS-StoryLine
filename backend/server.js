@@ -37,7 +37,11 @@ import * as blobStorage from './blob-storage.js';
 import * as progressStorage from './progress-storage.js';
 import * as usersStorage from './users-storage.js';
 import * as attemptsStorage from './attempts-storage.js';
+import * as kcAttemptsStorage from './kc-attempts-storage.js';
 import * as moduleRulesStorage from './module-rules-storage.js';
+import * as providersStorage from './providers-storage.js';
+import * as providerCoursesStorage from './provider-courses-storage.js';
+import * as userAssignmentsStorage from './user-assignments-storage.js';
 import { extractActivityIdFromXml } from './extract-activity-id.js';
 import { initializeTables } from './azure-tables.js';
 import * as verbTracker from './xapi-verb-tracker.js';
@@ -62,6 +66,10 @@ import {
   updateCourseSchema,
   customVerbSchema,
   moduleRulesSchema,
+  providerSchema,
+  providerCourseSchema,
+  userProviderSchema,
+  userRolesSchema,
   validate
 } from './validation.js';
 
@@ -289,12 +297,65 @@ function requireAuth(req) {
   return user;
 }
 
+function isAdminUser(user) {
+  if (!user) return false;
+  return user.role === 'admin' || user.isAdmin === true || (Array.isArray(user.roles) && user.roles.includes('admin'));
+}
+
 function requireAdmin(req) {
   const user = requireAuth(req);
-  if (user.role !== 'admin') {
+  if (!isAdminUser(user)) {
     throw new AuthorizationError('Admin access required');
   }
   return user;
+}
+
+function countAdmins(users) {
+  return users.filter((user) => isAdminUser(user)).length;
+}
+
+function normalizeRolesInput(currentUser, input = {}) {
+  const nextRoles = new Set(Array.isArray(currentUser?.roles) && currentUser.roles.length > 0
+    ? currentUser.roles
+    : [currentUser?.role || 'learner']);
+
+  if (Array.isArray(input.roles)) {
+    nextRoles.clear();
+    input.roles.forEach((role) => nextRoles.add(role));
+  }
+
+  if (input.role) {
+    nextRoles.add(input.role);
+  }
+
+  if (input.flags) {
+    const flagMap = {
+      isAdmin: 'admin',
+      isManager: 'manager',
+      isCoordinator: 'coordinator',
+      isLearningCoordinator: 'learningCoordinator',
+      isCoach: 'coach',
+      isInstructionalCoach: 'instructionalCoach',
+      isCorporate: 'corporate',
+      isHr: 'hr',
+      isLearner: 'learner'
+    };
+
+    Object.entries(flagMap).forEach(([flag, role]) => {
+      if (input.flags[flag] === true) {
+        nextRoles.add(role);
+      }
+      if (input.flags[flag] === false) {
+        nextRoles.delete(role);
+      }
+    });
+  }
+
+  if (nextRoles.size === 0) {
+    nextRoles.add('learner');
+  }
+
+  return Array.from(nextRoles);
 }
 
 function decodeBasicAuthHeader(authHeader) {
@@ -347,10 +408,170 @@ function getAgentEmail(agent) {
 
 function assertActorMatches(user, actorEmail) {
   if (!actorEmail) return;
-  if (user.role === 'admin') return;
+  if (isAdminUser(user)) return;
   if (user.email?.toLowerCase() !== actorEmail.toLowerCase()) {
     throw new AuthorizationError('Actor does not match authenticated user');
   }
+}
+
+function getScorePercentFromAttempt(attempt) {
+  if (!attempt) return null;
+  if (typeof attempt.scoreScaled === 'number') return attempt.scoreScaled * 100;
+  if (typeof attempt.scoreRaw === 'number' && typeof attempt.scoreMax === 'number' && attempt.scoreMax > 0) {
+    return (attempt.scoreRaw / attempt.scoreMax) * 100;
+  }
+  if (typeof attempt.scoreRaw === 'number') return attempt.scoreRaw;
+  return null;
+}
+
+function roundScore(value) {
+  if (value === null || value === undefined) return null;
+  return Math.round(value * 10) / 10;
+}
+
+function summarizeKcAttempts(attempts) {
+  const summaries = new Map();
+
+  attempts.forEach(attempt => {
+    const assessmentId = attempt.assessmentId || 'unknown';
+    const key = assessmentId;
+    const existing = summaries.get(key) || {
+      assessmentId,
+      assessmentName: attempt.assessmentName || null,
+      attempts: 0,
+      scoredAttempts: 0,
+      scoreSum: 0,
+      bestScore: null,
+      lastScore: null,
+      lastAttemptAt: null,
+      successCount: 0,
+      successTotal: 0
+    };
+
+    existing.attempts += 1;
+    if (!existing.assessmentName && attempt.assessmentName) {
+      existing.assessmentName = attempt.assessmentName;
+    }
+
+    const scorePercent = getScorePercentFromAttempt(attempt);
+    if (scorePercent !== null) {
+      existing.scoredAttempts += 1;
+      existing.scoreSum += scorePercent;
+      if (existing.bestScore === null || scorePercent > existing.bestScore) {
+        existing.bestScore = scorePercent;
+      }
+    }
+
+    if (typeof attempt.success === 'boolean') {
+      existing.successTotal += 1;
+      if (attempt.success) {
+        existing.successCount += 1;
+      }
+    }
+
+    const attemptTime = attempt.timestamp || attempt.storedAt || null;
+    if (attemptTime) {
+      const attemptMs = new Date(attemptTime).getTime();
+      const lastMs = existing.lastAttemptAt ? new Date(existing.lastAttemptAt).getTime() : null;
+      if (!lastMs || (attemptMs && attemptMs > lastMs)) {
+        existing.lastAttemptAt = attemptTime;
+        existing.lastScore = scorePercent;
+      }
+    }
+
+    summaries.set(key, existing);
+  });
+
+  return Array.from(summaries.values()).map(summary => ({
+    assessmentId: summary.assessmentId,
+    assessmentName: summary.assessmentName,
+    attempts: summary.attempts,
+    scoredAttempts: summary.scoredAttempts,
+    averageScorePercent: summary.scoredAttempts > 0 ? roundScore(summary.scoreSum / summary.scoredAttempts) : null,
+    bestScorePercent: roundScore(summary.bestScore),
+    lastScorePercent: roundScore(summary.lastScore),
+    successRatePercent: summary.successTotal > 0 ? Math.round((summary.successCount / summary.successTotal) * 100) : null,
+    lastAttemptAt: summary.lastAttemptAt
+  }));
+}
+
+function summarizeKcAttemptsByUser(attempts) {
+  const summaries = new Map();
+
+  attempts.forEach(attempt => {
+    const userEmail = attempt.userEmail || 'unknown';
+    const existing = summaries.get(userEmail) || {
+      userEmail,
+      attempts: 0,
+      scoredAttempts: 0,
+      scoreSum: 0,
+      bestScore: null,
+      lastScore: null,
+      lastAttemptAt: null,
+      successCount: 0,
+      successTotal: 0
+    };
+
+    existing.attempts += 1;
+
+    const scorePercent = getScorePercentFromAttempt(attempt);
+    if (scorePercent !== null) {
+      existing.scoredAttempts += 1;
+      existing.scoreSum += scorePercent;
+      if (existing.bestScore === null || scorePercent > existing.bestScore) {
+        existing.bestScore = scorePercent;
+      }
+    }
+
+    if (typeof attempt.success === 'boolean') {
+      existing.successTotal += 1;
+      if (attempt.success) {
+        existing.successCount += 1;
+      }
+    }
+
+    const attemptTime = attempt.timestamp || attempt.storedAt || null;
+    if (attemptTime) {
+      const attemptMs = new Date(attemptTime).getTime();
+      const lastMs = existing.lastAttemptAt ? new Date(existing.lastAttemptAt).getTime() : null;
+      if (!lastMs || (attemptMs && attemptMs > lastMs)) {
+        existing.lastAttemptAt = attemptTime;
+        existing.lastScore = scorePercent;
+      }
+    }
+
+    summaries.set(userEmail, existing);
+  });
+
+  return Array.from(summaries.values()).map(summary => ({
+    userEmail: summary.userEmail,
+    attempts: summary.attempts,
+    scoredAttempts: summary.scoredAttempts,
+    averageScorePercent: summary.scoredAttempts > 0 ? roundScore(summary.scoreSum / summary.scoredAttempts) : null,
+    bestScorePercent: roundScore(summary.bestScore),
+    lastScorePercent: roundScore(summary.lastScore),
+    successRatePercent: summary.successTotal > 0 ? Math.round((summary.successCount / summary.successTotal) * 100) : null,
+    lastAttemptAt: summary.lastAttemptAt
+  }));
+}
+
+function isKnowledgeCheckStatement(statement) {
+  if (!statement) return false;
+  const verbId = statement.verb?.id || '';
+  const verbConfig = verbTracker.getVerbConfig(verbId);
+  const interactionType = statement.object?.definition?.interactionType || '';
+  const definitionType = statement.object?.definition?.type || '';
+  const result = statement.result || {};
+  const score = result.score || {};
+
+  const hasResponse = typeof result.response === 'string' && result.response.length > 0;
+  const hasScore = typeof score.scaled === 'number' || typeof score.raw === 'number';
+  const hasSuccess = typeof result.success === 'boolean';
+  const isInteractionType = Boolean(interactionType) || definitionType.includes('interaction') || definitionType.includes('question');
+
+  return verbConfig.action === 'track_answer' ||
+    verbConfig.action === 'track_attempt' ||
+    (isInteractionType && (hasResponse || hasScore || hasSuccess));
 }
 
 // ============================================================================
@@ -375,6 +596,144 @@ function setModuleRulesCache(courseId, rules) {
 }
 
 // ============================================================================
+// Course Cache
+// ============================================================================
+
+const courseCache = {
+  courses: null,
+  fetchedAt: 0
+};
+const COURSE_CACHE_TTL_MS = parseInt(process.env.COURSE_CACHE_TTL_MS || '60000', 10);
+
+async function getCachedCourses() {
+  const now = Date.now();
+  if (courseCache.courses && (now - courseCache.fetchedAt) < COURSE_CACHE_TTL_MS) {
+    return courseCache.courses;
+  }
+  const courses = await coursesStorage.getAllCourses();
+  courseCache.courses = courses;
+  courseCache.fetchedAt = now;
+  return courses;
+}
+
+function invalidateCourseCache() {
+  courseCache.courses = null;
+  courseCache.fetchedAt = 0;
+}
+
+// ============================================================================
+// Users Cache
+// ============================================================================
+
+const usersCache = {
+  users: null,
+  fetchedAt: 0
+};
+const USERS_CACHE_TTL_MS = parseInt(process.env.USERS_CACHE_TTL_MS || '60000', 10);
+
+async function getCachedUsers() {
+  const now = Date.now();
+  if (usersCache.users && (now - usersCache.fetchedAt) < USERS_CACHE_TTL_MS) {
+    return usersCache.users;
+  }
+  const users = await auth.getAllUsers();
+  usersCache.users = users;
+  usersCache.fetchedAt = now;
+  return users;
+}
+
+function invalidateUsersCache() {
+  usersCache.users = null;
+  usersCache.fetchedAt = 0;
+}
+
+// ============================================================================
+// Report Helpers
+// ============================================================================
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function addDays(baseIso, days) {
+  const baseMs = baseIso ? new Date(baseIso).getTime() : Date.now();
+  return new Date(baseMs + days * DAY_MS).toISOString();
+}
+
+function parseDateParam(value, label) {
+  if (!value) return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    throw new ValidationError(`Invalid ${label}`);
+  }
+  return date;
+}
+
+function resolveReportDateRange(dateType, startParam, endParam) {
+  const now = new Date();
+  const start = parseDateParam(startParam, 'startDate');
+  const end = parseDateParam(endParam, 'endDate');
+
+  if (start && end && start > end) {
+    throw new ValidationError('startDate must be before endDate');
+  }
+
+  if (start || end) {
+    return { start, end };
+  }
+
+  if (dateType === 'completion') {
+    return { start: new Date(now.getTime() - 30 * DAY_MS), end: now };
+  }
+
+  return { start: null, end: new Date(now.getTime() + 30 * DAY_MS) };
+}
+
+async function fetchAllProgress() {
+  let token = null;
+  const all = [];
+
+  do {
+    const page = await progressStorage.getAllProgress({ limit: 1000, continuationToken: token });
+    all.push(...(page.data || []));
+    token = page.continuationToken || null;
+  } while (token);
+
+  return all;
+}
+
+// ============================================================================
+// Progress Sync Throttling
+// ============================================================================
+
+const progressSyncState = new Map();
+const PROGRESS_SYNC_MIN_INTERVAL_SECONDS = parseInt(process.env.PROGRESS_SYNC_MIN_INTERVAL_SECONDS || '60', 10);
+const PROGRESS_SYNC_MAX_KEYS = parseInt(process.env.PROGRESS_SYNC_MAX_KEYS || '50000', 10);
+
+function shouldSyncProgress(userEmail, courseId, registrationId, statement) {
+  if (!userEmail || !courseId) return false;
+  if (progressSyncState.size > PROGRESS_SYNC_MAX_KEYS) {
+    progressSyncState.clear();
+  }
+
+  const key = `${userEmail}|${courseId}|${registrationId || 'none'}`;
+  const now = Date.now();
+  const lastSyncAt = progressSyncState.get(key)?.lastSyncAt || 0;
+  const verbId = statement?.verb?.id || '';
+  const isCompletion = verbTracker.isCompletionVerb(verbId);
+
+  if (isCompletion || PROGRESS_SYNC_MIN_INTERVAL_SECONDS <= 0) {
+    progressSyncState.set(key, { lastSyncAt: now });
+    return true;
+  }
+
+  if (now - lastSyncAt >= PROGRESS_SYNC_MIN_INTERVAL_SECONDS * 1000) {
+    progressSyncState.set(key, { lastSyncAt: now });
+    return true;
+  }
+
+  return false;
+}
+
+// ============================================================================
 // Statement Progress Sync (Extracted Common Logic)
 // ============================================================================
 
@@ -385,7 +744,7 @@ function extractBaseActivityId(activityId) {
 }
 
 async function findCourseByActivityId(activityId) {
-  const allCourses = await coursesStorage.getAllCourses();
+  const allCourses = await getCachedCourses();
   const baseActivityId = extractBaseActivityId(activityId);
   
   let course = allCourses.find(c => c.activityId === activityId);
@@ -487,38 +846,60 @@ async function processStatementProgressSync(statement) {
   await updateAttemptModuleProgress(userEmail, registrationId, course, statement).catch(err => {
     serverLogger.error({ error: err.message }, 'Error updating module progress');
   });
+
+  if (isKnowledgeCheckStatement(statement)) {
+    kcAttemptsStorage.recordAttempt(statement, {
+      userEmail,
+      registrationId,
+      courseId: course.courseId,
+      activityId: baseActivityId
+    }).catch(err => {
+      serverLogger.error({ error: err.message }, 'Error recording knowledge check attempt');
+    });
+  }
   
-  // Sync progress in background
-  progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId, registrationId)
-    .then(async (syncResult) => {
-      if (syncResult?.updatedProgress) {
-        const { calculated } = syncResult;
-        if (registrationId && calculated) {
-          const eligibleForRaise = (calculated.completionStatus === 'passed' || calculated.completionStatus === 'completed') &&
-            calculated.success !== false;
-          try {
-            await attemptsStorage.upsertAttemptProgress(userEmail, registrationId, {
-              courseId: course.courseId,
-              activityId: baseActivityId,
-              completionStatus: calculated.completionStatus,
-              completionVerb: calculated.completionVerb,
-              completionStatementId: calculated.completionStatementId,
-              success: calculated.success,
-              score: calculated.score,
-              progressPercent: calculated.progressPercent,
-              timeSpent: calculated.timeSpent,
-              completedAt: calculated.completedAt,
-              eligibleForRaise
-            });
-          } catch (attemptError) {
-            serverLogger.error({ error: attemptError.message }, 'Error updating attempt');
+  if (shouldSyncProgress(userEmail, course.courseId, registrationId, statement)) {
+    // Sync progress in background
+    progressStorage.syncProgressFromStatements(userEmail, course.courseId, baseActivityId, registrationId)
+      .then(async (syncResult) => {
+        if (syncResult?.updatedProgress) {
+          const { calculated } = syncResult;
+          if (registrationId && calculated) {
+            const eligibleForRaise = (calculated.completionStatus === 'passed' || calculated.completionStatus === 'completed') &&
+              calculated.success !== false;
+            try {
+              await attemptsStorage.upsertAttemptProgress(userEmail, registrationId, {
+                courseId: course.courseId,
+                activityId: baseActivityId,
+                completionStatus: calculated.completionStatus,
+                completionVerb: calculated.completionVerb,
+                completionStatementId: calculated.completionStatementId,
+                success: calculated.success,
+                score: calculated.score,
+                progressPercent: calculated.progressPercent,
+                timeSpent: calculated.timeSpent,
+                completedAt: calculated.completedAt,
+                eligibleForRaise
+              });
+            } catch (attemptError) {
+              serverLogger.error({ error: attemptError.message }, 'Error updating attempt');
+            }
           }
         }
-      }
-    })
-    .catch(err => {
-      serverLogger.error({ error: err.message }, 'Auto-sync error');
+      })
+      .catch(err => {
+        serverLogger.error({ error: err.message }, 'Auto-sync error');
+      });
+  }
+}
+
+function processStatementsSideEffects(statements) {
+  const list = Array.isArray(statements) ? statements : [statements];
+  list.forEach(statement => {
+    processStatementProgressSync(statement).catch(err => {
+      serverLogger.error({ error: err.message }, 'Statement side-effects error');
     });
+  });
 }
 
 // ============================================================================
@@ -689,14 +1070,11 @@ app.post('/api/auth/logout', asyncHandler(async (req, res) => {
 
 app.get('/api/auth/me', asyncHandler(async (req, res) => {
   const user = requireAuth(req);
+  const freshUser = await usersStorage.getUserById(user.userId || user.id)
+    || await usersStorage.getUserByEmail(user.email);
+  const responseUser = freshUser ? auth.buildAuthUser(freshUser) : auth.buildAuthUser(user);
   res.json({ 
-    user: {
-      ...user,
-      userId: user.userId || user.id,
-      isAdmin: user.role === 'admin',
-      firstName: user.name?.split(' ')[0] || user.name,
-      lastName: user.name?.split(' ').slice(1).join(' ') || ''
-    }
+    user: responseUser
   });
 }));
 
@@ -716,7 +1094,7 @@ app.get('/api/auth/csrf', asyncHandler(async (req, res) => {
 
 app.get('/api/courses', apiLimiter, asyncHandler(async (req, res) => {
     const user = verifyAuth(req);
-    const courses = await coursesStorage.getAllCourses();
+    const courses = await getCachedCourses();
     
     let userProgress = [];
   if (user?.email) {
@@ -984,21 +1362,43 @@ app.get('/course/*', asyncHandler(async (req, res) => {
     // Allow images from same origin, data URIs, and blob URIs
     // Allow fonts from same origin
     // Allow frames from same origin
+    const cspFrameSrc = process.env.CSP_FRAME_SRC
+      ? process.env.CSP_FRAME_SRC.split(',').map(source => source.trim()).filter(Boolean)
+      : [];
+    const cspScriptSrc = process.env.CSP_SCRIPT_SRC
+      ? process.env.CSP_SCRIPT_SRC.split(',').map(source => source.trim()).filter(Boolean)
+      : [];
+    const cspConnectSrc = process.env.CSP_CONNECT_SRC
+      ? process.env.CSP_CONNECT_SRC.split(',').map(source => source.trim()).filter(Boolean)
+      : [];
+    const cspImgSrc = process.env.CSP_IMG_SRC
+      ? process.env.CSP_IMG_SRC.split(',').map(source => source.trim()).filter(Boolean)
+      : [];
+    const connectSources = cspConnectSrc.length ? cspConnectSrc : ['*'];
+
+    // Frame ancestors for embedding - allow localhost dev servers and same origin
+    const frameAncestors = process.env.NODE_ENV === 'production' 
+      ? "'self'" 
+      : "'self' http://localhost:* http://127.0.0.1:*";
+    
     res.setHeader('Content-Security-Policy', [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'", // Storyline requires inline scripts
+      `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${cspScriptSrc.join(' ')}`.trim(), // Storyline requires inline scripts
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob:",
+      `img-src 'self' data: blob: ${cspImgSrc.join(' ')}`.trim(),
       "font-src 'self' data:",
-      "connect-src 'self' " + (process.env.CSP_CONNECT_SRC || '*'), // Allow xAPI connections
-      "frame-src 'self'",
+      `connect-src 'self' ${connectSources.join(' ')}`.trim(), // Allow xAPI connections
+      `frame-src 'self' ${cspFrameSrc.join(' ')}`.trim(),
       "media-src 'self' blob:",
       "object-src 'none'",
-      "base-uri 'self'"
+      "base-uri 'self'",
+      "frame-ancestors " + frameAncestors // Modern replacement for X-Frame-Options
     ].join('; '));
     
-    // Prevent clickjacking
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    // X-Frame-Options only in production (frame-ancestors takes precedence in modern browsers)
+    if (process.env.NODE_ENV === 'production') {
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    }
     res.setHeader('X-Content-Type-Options', 'nosniff');
   }
   
@@ -1032,10 +1432,8 @@ app.post('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
 
     const result = await xapiLRS.saveStatement(req.body);
     
-  // Process progress sync asynchronously
-  processStatementProgressSync(statement).catch(err => {
-    serverLogger.error({ error: err.message }, 'Statement progress sync error');
-  });
+  // Process side-effects asynchronously (progress sync + KC attempts)
+  processStatementsSideEffects(req.body);
   
     res.status(result.status).json(result.data);
 }));
@@ -1048,14 +1446,14 @@ app.get('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
       if (result.status === 404) {
         return res.status(404).send();
       }
-      if (user.role !== 'admin') {
+      if (!isAdminUser(user)) {
         const actorEmail = getAgentEmail(result.data?.actor);
         assertActorMatches(user, actorEmail);
       }
       return res.status(result.status).json(result.data);
     }
     
-    if (user.role !== 'admin' && req.query.agent) {
+    if (!isAdminUser(user) && req.query.agent) {
       try {
         const agentObj = typeof req.query.agent === 'string' ? JSON.parse(decodeURIComponent(req.query.agent)) : req.query.agent;
         const agentEmail = getAgentEmail(agentObj);
@@ -1065,7 +1463,7 @@ app.get('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
       }
     }
   
-    if (user.role !== 'admin' && !req.query.agent) {
+    if (!isAdminUser(user) && !req.query.agent) {
       req.query.agent = JSON.stringify({
         objectType: 'Agent',
         mbox: `mailto:${user.email}`
@@ -1092,10 +1490,8 @@ app.put('/xapi/statements', xapiLimiter, asyncHandler(async (req, res) => {
 
     const result = await xapiLRS.saveStatement(statement);
     
-  // Process progress sync asynchronously
-  processStatementProgressSync(statement).catch(err => {
-    serverLogger.error({ error: err.message }, 'Statement progress sync error');
-  });
+  // Process side-effects asynchronously (progress sync + KC attempts)
+  processStatementsSideEffects(statement);
     
     res.status(result.status).json(result.data);
 }));
@@ -1108,7 +1504,7 @@ app.get('/xapi/statements/:id', xapiLimiter, asyncHandler(async (req, res) => {
       return res.status(404).send();
     }
   
-    if (user.role !== 'admin') {
+    if (!isAdminUser(user)) {
       const actorEmail = getAgentEmail(result.data?.actor);
       assertActorMatches(user, actorEmail);
     }
@@ -1290,15 +1686,15 @@ app.get('/api/users/:userId/courses', apiLimiter, asyncHandler(async (req, res) 
     const normalizedUserId = userId.includes('@') ? userId : user.email || userId;
     const currentUserEmail = user.email;
   
-  if (currentUserEmail !== normalizedUserId && user.role !== 'admin') {
+  if (currentUserEmail !== normalizedUserId && !isAdminUser(user)) {
     throw new AuthorizationError('Access denied');
-    }
+  }
     
     const progressUserId = normalizedUserId.includes('@') ? normalizedUserId : currentUserEmail || normalizedUserId;
     const progressList = await progressStorage.getUserProgress(progressUserId);
     
   // Pre-fetch all courses to avoid N+1
-  const allCourses = await coursesStorage.getAllCourses();
+  const allCourses = await getCachedCourses();
   const courseMap = new Map(allCourses.map(c => [c.courseId, c]));
   
     const coursesWithProgress = await Promise.all(
@@ -1361,9 +1757,9 @@ app.post('/api/users/:userId/courses/:courseId/enroll', apiLimiter, asyncHandler
     const normalizedUserId = userId.includes('@') ? userId : user.email || userId;
     const currentUserEmail = user.email;
   
-  if (currentUserEmail !== normalizedUserId && user.role !== 'admin') {
+  if (currentUserEmail !== normalizedUserId && !isAdminUser(user)) {
     throw new AuthorizationError('Access denied');
-    }
+  }
     
     const course = await coursesStorage.getCourseById(courseId);
     if (!course) {
@@ -1391,7 +1787,7 @@ app.post('/api/users/:userId/courses/:courseId/enroll', apiLimiter, asyncHandler
 
 app.get('/api/admin/courses', apiLimiter, asyncHandler(async (req, res) => {
     requireAdmin(req);
-    const courses = await coursesStorage.getAllCourses();
+    const courses = await getCachedCourses();
     
   // Pre-fetch all progress to avoid N+1 (with pagination)
   const allProgress = await fetchAllProgress();
@@ -1526,6 +1922,7 @@ app.post('/api/admin/courses', apiLimiter, validateBody(createCourseSchema), asy
     };
 
     await coursesStorage.saveCourse(newCourse);
+    invalidateCourseCache();
     
   serverLogger.info({ courseId, title }, 'Course created');
     res.status(201).json(newCourse);
@@ -1549,6 +1946,7 @@ app.put('/api/admin/courses/:courseId', apiLimiter, validateBody(updateCourseSch
     };
 
     await coursesStorage.saveCourse(updatedCourse);
+    invalidateCourseCache();
     
   serverLogger.info({ courseId }, 'Course updated');
     res.json(updatedCourse);
@@ -1564,106 +1962,420 @@ app.delete('/api/admin/courses/:courseId', apiLimiter, asyncHandler(async (req, 
     }
 
     await coursesStorage.deleteCourse(courseId);
+    invalidateCourseCache();
   serverLogger.info({ courseId }, 'Course deleted');
     res.status(204).send();
 }));
 
-// Helper to fetch all progress with pagination
-async function fetchAllProgress() {
-  let allProgress = [];
-  let continuationToken = null;
-  do {
-    const result = await progressStorage.getAllProgress({ continuationToken });
-    allProgress = allProgress.concat(result.data);
-    continuationToken = result.continuationToken;
-  } while (continuationToken);
-  return allProgress;
-}
-
 app.get('/api/admin/progress', apiLimiter, asyncHandler(async (req, res) => {
-    requireAdmin(req);
-    
-  // Pre-fetch all data to avoid N+1
-  const [allProgress, allCourses, allUsers] = await Promise.all([
-    fetchAllProgress(),
-    coursesStorage.getAllCourses(),
-    auth.getAllUsers()
+  requireAdmin(req);
+
+  const { courseId, limit, continuationToken, paginated } = req.query;
+  const shouldPaginate = paginated === 'true' || paginated === '1' || limit || continuationToken || courseId;
+  const pageLimit = Math.min(parseInt(limit || '0', 10) || 200, 1000);
+  const normalizedCourseId = courseId ? String(courseId) : '';
+  const hasCourseFilter = normalizedCourseId && normalizedCourseId !== 'all';
+
+  const [allCourses, allUsers] = await Promise.all([
+    getCachedCourses(),
+    getCachedUsers()
   ]);
-  
+
   const courseMap = new Map(allCourses.map(c => [c.courseId, c]));
   const userMap = new Map(allUsers.map(u => [u.email?.toLowerCase(), u]));
-  
-  const enrichedProgress = allProgress.map(progress => {
-    const course = courseMap.get(progress.courseId);
-          if (!course) return null;
-          
-    let userEmail = progress.userId.includes('@') ? progress.userId : null;
-          let firstName = null;
-          let lastName = null;
-          
-    if (userEmail) {
-      const user = userMap.get(userEmail.toLowerCase());
-              if (user) {
-                const nameParts = (user.name || '').split(' ');
-                firstName = nameParts[0] || null;
-                lastName = nameParts.slice(1).join(' ') || null;
-              } else {
-        firstName = userEmail.split('@')[0] || null;
-            }
-          } else {
-                userEmail = `${progress.userId}@example.com`;
-                firstName = progress.userId;
+
+  const buildEnrichedProgress = (progressList) => {
+    const enriched = progressList.map(progress => {
+      const course = courseMap.get(progress.courseId);
+      if (!course) return null;
+
+      let userEmail = progress.userId.includes('@') ? progress.userId : null;
+      let firstName = null;
+      let lastName = null;
+
+      if (userEmail) {
+        const user = userMap.get(userEmail.toLowerCase());
+        if (user) {
+          const nameParts = (user.name || '').split(' ');
+          firstName = nameParts[0] || null;
+          lastName = nameParts.slice(1).join(' ') || null;
+        } else {
+          firstName = userEmail.split('@')[0] || null;
+        }
+      } else {
+        userEmail = `${progress.userId}@example.com`;
+        firstName = progress.userId;
+      }
+
+      let progressPercent = 0;
+      if (progress.progressPercent !== undefined && progress.progressPercent !== null) {
+        progressPercent = Number(progress.progressPercent);
+      } else if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed' || progress.completedAt) {
+        progressPercent = 100;
+      } else if (progress.score !== undefined && progress.score !== null) {
+        progressPercent = Number(progress.score);
+      }
+
+      let startedAt = progress.startedAt;
+      if (!startedAt && (progressPercent > 0 || progress.timeSpent > 0 || (progress.completionStatus && progress.completionStatus !== 'not_started'))) {
+        startedAt = progress.enrolledAt;
+      }
+
+      return {
+        userId: progress.userId,
+        email: userEmail,
+        firstName,
+        lastName,
+        courseId: course.courseId,
+        courseTitle: course.title,
+        enrollmentStatus: progress.enrollmentStatus,
+        completionStatus: progress.completionStatus,
+        score: progress.score,
+        progressPercent,
+        timeSpent: progress.timeSpent || 0,
+        attempts: progress.attempts || 0,
+        enrolledAt: progress.enrolledAt,
+        startedAt,
+        completedAt: progress.completedAt,
+        lastAccessedAt: progress.lastAccessedAt
+      };
+    }).filter(p => p !== null);
+
+    enriched.sort((a, b) => {
+      const aTime = a.lastAccessedAt ? new Date(a.lastAccessedAt).getTime() : 0;
+      const bTime = b.lastAccessedAt ? new Date(b.lastAccessedAt).getTime() : 0;
+      return bTime - aTime;
+    });
+
+    return enriched;
+  };
+
+  if (!shouldPaginate) {
+    const allProgress = await fetchAllProgress();
+    return res.json(buildEnrichedProgress(allProgress));
+  }
+
+  const pageResult = hasCourseFilter
+    ? await progressStorage.getCourseProgressPage(normalizedCourseId, { limit: pageLimit, continuationToken })
+    : await progressStorage.getAllProgress({ limit: pageLimit, continuationToken });
+
+  return res.json({
+    data: buildEnrichedProgress(pageResult.data),
+    continuationToken: pageResult.continuationToken || null,
+    hasMore: pageResult.hasMore || false
+  });
+}));
+
+// Activity report - provider summary
+app.get('/api/admin/reports/activity/summary', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+
+  const providerId = String(req.query.providerId || 'all');
+  const courseId = String(req.query.courseId || 'all');
+  const dateType = String(req.query.dateType || 'due');
+
+  if (!['due', 'completion'].includes(dateType)) {
+    throw new ValidationError('dateType must be "due" or "completion"');
+  }
+
+  const { start, end } = resolveReportDateRange(dateType, req.query.startDate, req.query.endDate);
+
+  const providers = providerId === 'all'
+    ? await providersStorage.listProviders()
+    : [await providersStorage.getProvider(providerId)];
+
+  if (providers.some(p => !p)) {
+    throw new NotFoundError('Provider');
+  }
+
+  const users = await getCachedUsers();
+  const usersByProvider = new Map();
+  users.forEach(user => {
+    if (!user.providerId) return;
+    if (!usersByProvider.has(user.providerId)) {
+      usersByProvider.set(user.providerId, []);
     }
-    
-          let progressPercent = 0;
-          if (progress.progressPercent !== undefined && progress.progressPercent !== null) {
-            progressPercent = Number(progress.progressPercent);
-          } else if (progress.completionStatus === 'completed' || progress.completionStatus === 'passed' || progress.completedAt) {
-            progressPercent = 100;
-          } else if (progress.score !== undefined && progress.score !== null) {
-            progressPercent = Number(progress.score);
-          }
-          
-          let startedAt = progress.startedAt;
-    if (!startedAt && (progressPercent > 0 || progress.timeSpent > 0 || (progress.completionStatus && progress.completionStatus !== 'not_started'))) {
-              startedAt = progress.enrolledAt;
-          }
-          
-          return {
-            userId: progress.userId,
-            email: userEmail,
-      firstName,
-      lastName,
-            courseId: course.courseId,
-            courseTitle: course.title,
-            enrollmentStatus: progress.enrollmentStatus,
-            completionStatus: progress.completionStatus,
-            score: progress.score,
-      progressPercent,
-      timeSpent: progress.timeSpent || 0,
-            attempts: progress.attempts || 0,
-            enrolledAt: progress.enrolledAt,
-      startedAt,
-            completedAt: progress.completedAt,
-            lastAccessedAt: progress.lastAccessedAt
-          };
-  }).filter(p => p !== null);
-  
-  enrichedProgress.sort((a, b) => {
-        const aTime = a.lastAccessedAt ? new Date(a.lastAccessedAt).getTime() : 0;
-        const bTime = b.lastAccessedAt ? new Date(b.lastAccessedAt).getTime() : 0;
-        return bTime - aTime;
-      });
-    
-  res.json(enrichedProgress);
+    usersByProvider.get(user.providerId).push(user);
+  });
+
+  const progressList = await fetchAllProgress();
+  const progressMap = new Map();
+  const lastAccessByUser = new Map();
+
+  progressList.forEach(progress => {
+    progressMap.set(`${progress.userId}|${progress.courseId}`, progress);
+    if (progress.lastAccessedAt) {
+      const accessedMs = new Date(progress.lastAccessedAt).getTime();
+      const current = lastAccessByUser.get(progress.userId) || 0;
+      if (accessedMs > current) {
+        lastAccessByUser.set(progress.userId, accessedMs);
+      }
+    }
+  });
+
+  const isWithinRange = (value) => {
+    if (!value) return false;
+    const ms = new Date(value).getTime();
+    if (Number.isNaN(ms)) return false;
+    if (start && ms < start.getTime()) return false;
+    if (end && ms > end.getTime()) return false;
+    return true;
+  };
+
+  const activeCutoffMs = Date.now() - 30 * DAY_MS;
+  const rows = [];
+  let totalAssigned = 0;
+  let totalCompleted = 0;
+  let totalCompletedOnTime = 0;
+  let totalCompletedLate = 0;
+  let totalNotComplete = 0;
+
+  for (const provider of providers) {
+    const providerUsers = usersByProvider.get(provider.providerId) || [];
+    const activeLearners = providerUsers.filter(user => {
+      const lastAccessed = lastAccessByUser.get(user.id) || 0;
+      return lastAccessed >= activeCutoffMs;
+    }).length;
+
+    const assignments = await userAssignmentsStorage.listAssignmentsByProvider(provider.providerId);
+    const scopedAssignments = courseId === 'all'
+      ? assignments
+      : assignments.filter(assignment => assignment.courseId === courseId);
+
+    let assigned = 0;
+    let completed = 0;
+    let completedOnTime = 0;
+    let completedLate = 0;
+
+    for (const assignment of scopedAssignments) {
+      const progress = progressMap.get(`${assignment.userId}|${assignment.courseId}`);
+      const completedAt = progress?.completedAt || null;
+      const completionStatus = progress?.completionStatus || '';
+      const isCompleted = !!completedAt && (completionStatus === 'completed' || completionStatus === 'passed');
+
+      const include = dateType === 'completion'
+        ? (isCompleted && isWithinRange(completedAt))
+        : isWithinRange(assignment.dueDate);
+
+      if (!include) continue;
+
+      assigned += 1;
+      if (isCompleted) {
+        completed += 1;
+        const dueMs = assignment.dueDate ? new Date(assignment.dueDate).getTime() : null;
+        const completedMs = new Date(completedAt).getTime();
+        if (dueMs && completedMs <= dueMs) {
+          completedOnTime += 1;
+        } else if (dueMs) {
+          completedLate += 1;
+        }
+      }
+    }
+
+    const notComplete = assigned - completed;
+    const compliantPercent = assigned > 0
+      ? Math.round((completedOnTime / assigned) * 1000) / 10
+      : 0;
+
+    totalAssigned += assigned;
+    totalCompleted += completed;
+    totalCompletedOnTime += completedOnTime;
+    totalCompletedLate += completedLate;
+    totalNotComplete += notComplete;
+
+    rows.push({
+      providerId: provider.providerId,
+      providerName: provider.name,
+      activeLearners,
+      assigned,
+      completed,
+      completedOnTime,
+      completedLate,
+      notComplete,
+      compliantPercent
+    });
+  }
+
+  const totalCompliantPercent = totalAssigned > 0
+    ? Math.round((totalCompletedOnTime / totalAssigned) * 1000) / 10
+    : 0;
+
+  res.json({
+    rows,
+    totals: {
+      assigned: totalAssigned,
+      completed: totalCompleted,
+      completedOnTime: totalCompletedOnTime,
+      completedLate: totalCompletedLate,
+      notComplete: totalNotComplete,
+      compliantPercent: totalCompliantPercent
+    },
+    dateRange: {
+      startDate: start ? start.toISOString() : null,
+      endDate: end ? end.toISOString() : null
+    }
+  });
+}));
+
+// Activity report - provider detail
+app.get('/api/admin/reports/activity/users', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+
+  const providerId = String(req.query.providerId || '');
+  const courseId = String(req.query.courseId || 'all');
+  const dateType = String(req.query.dateType || 'due');
+
+  if (!providerId) {
+    throw new ValidationError('providerId is required');
+  }
+  if (!['due', 'completion'].includes(dateType)) {
+    throw new ValidationError('dateType must be "due" or "completion"');
+  }
+
+  const provider = await providersStorage.getProvider(providerId);
+  if (!provider) {
+    throw new NotFoundError('Provider');
+  }
+
+  const { start, end } = resolveReportDateRange(dateType, req.query.startDate, req.query.endDate);
+  const users = await getCachedUsers();
+  const userMap = new Map(users.map(user => [user.id, user]));
+  const courses = await getCachedCourses();
+  const courseMap = new Map(courses.map(course => [course.courseId, course]));
+
+  const progressList = await fetchAllProgress();
+  const progressMap = new Map();
+  progressList.forEach(progress => {
+    progressMap.set(`${progress.userId}|${progress.courseId}`, progress);
+  });
+
+  const isWithinRange = (value) => {
+    if (!value) return false;
+    const ms = new Date(value).getTime();
+    if (Number.isNaN(ms)) return false;
+    if (start && ms < start.getTime()) return false;
+    if (end && ms > end.getTime()) return false;
+    return true;
+  };
+
+  const assignments = await userAssignmentsStorage.listAssignmentsByProvider(providerId);
+  const scopedAssignments = courseId === 'all'
+    ? assignments
+    : assignments.filter(assignment => assignment.courseId === courseId);
+
+  const rows = [];
+
+  for (const assignment of scopedAssignments) {
+    const progress = progressMap.get(`${assignment.userId}|${assignment.courseId}`);
+    const completedAt = progress?.completedAt || null;
+    const completionStatus = progress?.completionStatus || '';
+    const isCompleted = !!completedAt && (completionStatus === 'completed' || completionStatus === 'passed');
+    const include = dateType === 'completion'
+      ? (isCompleted && isWithinRange(completedAt))
+      : isWithinRange(assignment.dueDate);
+
+    if (!include) continue;
+
+    const dueMs = assignment.dueDate ? new Date(assignment.dueDate).getTime() : null;
+    const completedMs = completedAt ? new Date(completedAt).getTime() : null;
+    const completedOnTime = !!(completedMs && dueMs && completedMs <= dueMs);
+    const completedLate = !!(completedMs && dueMs && completedMs > dueMs);
+
+    let status = 'not_complete';
+    if (completedOnTime) status = 'completed_on_time';
+    else if (completedLate) status = 'completed_late';
+    else if (isCompleted) status = 'completed';
+
+    const user = userMap.get(assignment.userId);
+    const course = courseMap.get(assignment.courseId);
+
+    rows.push({
+      userId: assignment.userId,
+      userName: user?.name || user?.email || assignment.userId,
+      courseId: assignment.courseId,
+      courseTitle: course?.title || assignment.courseId,
+      assignedAt: assignment.assignedAt,
+      dueDate: assignment.dueDate,
+      completedAt: completedAt || null,
+      completionStatus: completionStatus || null,
+      status
+    });
+  }
+
+  rows.sort((a, b) => {
+    const aTime = a.dueDate ? new Date(a.dueDate).getTime() : 0;
+    const bTime = b.dueDate ? new Date(b.dueDate).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  res.json({
+    providerId: provider.providerId,
+    providerName: provider.name,
+    rows,
+    dateRange: {
+      startDate: start ? start.toISOString() : null,
+      endDate: end ? end.toISOString() : null
+    }
+  });
+}));
+
+app.get('/api/admin/reports/users', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { courseId, limit, continuationToken } = req.query;
+  const normalizedCourseId = courseId ? String(courseId) : '';
+  const isAllCourses = !normalizedCourseId || normalizedCourseId === 'all';
+  const pageLimit = Math.min(parseInt(limit || '0', 10) || 200, 1000);
+
+  const course = isAllCourses ? null : await coursesStorage.getCourseById(normalizedCourseId);
+  if (!isAllCourses && !course) {
+    throw new NotFoundError('Course');
+  }
+
+  const [progressResult, allUsers, allCourses] = await Promise.all([
+    isAllCourses
+      ? progressStorage.getAllProgress({ limit: pageLimit, continuationToken })
+      : progressStorage.getCourseProgressPage(course.courseId, { limit: pageLimit, continuationToken }),
+    getCachedUsers(),
+    isAllCourses ? getCachedCourses() : Promise.resolve([])
+  ]);
+
+  const userByEmail = new Map(allUsers.map(u => [u.email?.toLowerCase(), u]));
+  const userById = new Map(allUsers.map(u => [u.userId, u]));
+  const courseMap = new Map(allCourses.map(c => [c.courseId, c]));
+
+  const rows = progressResult.data.map(progress => {
+    const rawId = String(progress.userId || '');
+    const emailKey = rawId.includes('@') ? rawId.toLowerCase() : null;
+    const user = emailKey ? userByEmail.get(emailKey) : userById.get(rawId);
+
+    const username = user?.name || user?.email || rawId || 'Unknown';
+    const resolvedCourse = course || courseMap.get(progress.courseId);
+    const courseTitle = resolvedCourse?.title || progress.courseId || 'Unknown Course';
+
+    return {
+      id: rawId,
+      username,
+      courseTitle,
+      enrolledAt: progress.enrolledAt || null,
+      completedAt: progress.completedAt || null
+    };
+  });
+
+  res.json({
+    courseId: isAllCourses ? 'all' : course.courseId,
+    courseTitle: isAllCourses ? 'All Courses' : course.title,
+    rows,
+    continuationToken: progressResult.continuationToken || null,
+    hasMore: progressResult.hasMore || false
+  });
 }));
 
 app.get('/api/admin/attempts', apiLimiter, asyncHandler(async (req, res) => {
-    requireAdmin(req);
-  
+  requireAdmin(req);
+
   const [attempts, courses] = await Promise.all([
     attemptsStorage.listAttempts(),
-    coursesStorage.getAllCourses()
+    getCachedCourses()
   ]);
   
   const courseMap = new Map(courses.map(c => [c.courseId, c]));
@@ -1677,7 +2389,94 @@ app.get('/api/admin/attempts', apiLimiter, asyncHandler(async (req, res) => {
       return bTime - aTime;
     });
 
-    res.json(enriched);
+  res.json(enriched);
+}));
+
+// Knowledge Check Attempts
+app.get('/api/kc-attempts', apiLimiter, asyncHandler(async (req, res) => {
+  const user = requireAuth(req);
+  const { courseId, registrationId, assessmentId, limit } = req.query;
+  const parsedLimit = limit ? Math.min(parseInt(limit, 10) || 0, 1000) : undefined;
+
+  const attempts = await kcAttemptsStorage.listAttemptsByUser(user.email, {
+    courseId,
+    registrationId,
+    assessmentId,
+    limit: parsedLimit
+  });
+
+  res.json(attempts);
+}));
+
+app.get('/api/admin/kc-attempts', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { userEmail, courseId, registrationId, assessmentId, limit } = req.query;
+
+  const parsedLimit = limit ? Math.min(parseInt(limit, 10) || 0, 1000) : undefined;
+
+  let attempts = [];
+  if (userEmail) {
+    attempts = await kcAttemptsStorage.listAttemptsByUser(String(userEmail), {
+      courseId,
+      registrationId,
+      assessmentId,
+      limit: parsedLimit
+    });
+  } else if (courseId) {
+    attempts = await kcAttemptsStorage.listAttemptsByCourse(String(courseId), {
+      registrationId,
+      assessmentId,
+      limit: parsedLimit
+    });
+  } else {
+    throw new ValidationError('userEmail or courseId query parameter is required');
+  }
+
+  res.json(attempts);
+}));
+
+app.get('/api/kc-scores', apiLimiter, asyncHandler(async (req, res) => {
+  const user = requireAuth(req);
+  const { courseId, registrationId, assessmentId, limit } = req.query;
+  const parsedLimit = limit ? Math.min(parseInt(limit, 10) || 0, 2000) : undefined;
+
+  const attempts = await kcAttemptsStorage.listAttemptsByUser(user.email, {
+    courseId,
+    registrationId,
+    assessmentId,
+    limit: parsedLimit
+  });
+
+  res.json(summarizeKcAttempts(attempts));
+}));
+
+app.get('/api/admin/kc-scores', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { userEmail, courseId, registrationId, assessmentId, limit } = req.query;
+
+  const parsedLimit = limit ? Math.min(parseInt(limit, 10) || 0, 2000) : undefined;
+
+  let attempts = [];
+  if (userEmail) {
+    attempts = await kcAttemptsStorage.listAttemptsByUser(String(userEmail), {
+      courseId,
+      registrationId,
+      assessmentId,
+      limit: parsedLimit
+    });
+    return res.json(summarizeKcAttempts(attempts));
+  }
+
+  if (courseId) {
+    attempts = await kcAttemptsStorage.listAttemptsByCourse(String(courseId), {
+      registrationId,
+      assessmentId,
+      limit: parsedLimit
+    });
+    return res.json(summarizeKcAttemptsByUser(attempts));
+  }
+
+  throw new ValidationError('userEmail or courseId query parameter is required');
 }));
 
 // Admin verb endpoints
@@ -1821,7 +2620,7 @@ app.delete('/api/admin/verbs/*', apiLimiter, asyncHandler(async (req, res) => {
 app.get('/api/admin/users', apiLimiter, asyncHandler(async (req, res) => {
   requireAdmin(req);
   
-  const users = await usersStorage.getAllUsers();
+  const users = await getCachedUsers();
   
   // Remove sensitive data (password hashes)
   const safeUsers = users.map(user => ({
@@ -1830,6 +2629,13 @@ app.get('/api/admin/users', apiLimiter, asyncHandler(async (req, res) => {
     firstName: user.firstName,
     lastName: user.lastName,
     role: user.role,
+    roles: user.roles,
+    isAdmin: user.isAdmin || (Array.isArray(user.roles) && user.roles.includes('admin')) || user.role === 'admin',
+    isManager: user.isManager,
+    isCoordinator: user.isCoordinator || user.isLearningCoordinator,
+    isCoach: user.isCoach || user.isInstructionalCoach,
+    isCorporate: user.isCorporate || user.isHr,
+    providerId: user.providerId || null,
     createdAt: user.createdAt,
     lastLogin: user.lastLogin,
   }));
@@ -1849,7 +2655,7 @@ app.put('/api/admin/users/:userId/role', apiLimiter, asyncHandler(async (req, re
   }
   
   // Find user by ID
-  const users = await usersStorage.getAllUsers();
+  const users = await getCachedUsers();
   const user = users.find(u => u.id === userId);
   
   if (!user) {
@@ -1857,18 +2663,144 @@ app.put('/api/admin/users/:userId/role', apiLimiter, asyncHandler(async (req, re
   }
   
   // Prevent demoting the last admin
-  if (user.role === 'admin' && role === 'learner') {
-    const adminCount = users.filter(u => u.role === 'admin').length;
+  if (isAdminUser(user) && role === 'learner') {
+    const adminCount = countAdmins(users);
     if (adminCount <= 1) {
       throw new ValidationError('Cannot demote the last admin');
     }
   }
   
+  const updatedRoles = Array.isArray(user.roles) ? [...user.roles] : [];
+  if (role === 'admin' && !updatedRoles.includes('admin')) {
+    updatedRoles.push('admin');
+  }
+  if (role !== 'admin') {
+    for (let i = updatedRoles.length - 1; i >= 0; i -= 1) {
+      if (updatedRoles[i] === 'admin') {
+        updatedRoles.splice(i, 1);
+      }
+    }
+  }
+  if (!updatedRoles.includes(role)) {
+    updatedRoles.push(role);
+  }
+
   // Update user role
-  await usersStorage.saveUser({ ...user, role });
+  await usersStorage.saveUser({ ...user, role, roles: updatedRoles });
   
   serverLogger.info({ userId, newRole: role }, 'User role updated');
+  invalidateUsersCache();
   res.json({ success: true, message: `User role updated to ${role}` });
+}));
+
+// Update user roles/flags (admin only)
+app.put('/api/admin/users/:userId/roles', apiLimiter, validateBody(userRolesSchema), asyncHandler(async (req, res) => {
+  requireAdmin(req);
+
+  const { userId } = req.params;
+  const { role, roles, flags } = req.body;
+
+  const users = await getCachedUsers();
+  const user = users.find(u => u.id === userId);
+
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+
+  const nextRoles = normalizeRolesInput(user, { role, roles, flags });
+
+  const nextPrimaryRole = role || user.role || 'learner';
+  if (!nextRoles.includes(nextPrimaryRole)) {
+    nextRoles.push(nextPrimaryRole);
+  }
+
+  const updatedUser = {
+    ...user,
+    role: nextPrimaryRole,
+    roles: nextRoles
+  };
+
+  const normalized = auth.buildAuthUser(updatedUser);
+
+  if (isAdminUser(user) && !normalized.isAdmin) {
+    const adminCount = countAdmins(users);
+    if (adminCount <= 1) {
+      throw new ValidationError('Cannot remove the last admin');
+    }
+  }
+
+  await usersStorage.saveUser({
+    ...user,
+    role: normalized.role,
+    roles: normalized.roles,
+    isAdmin: normalized.isAdmin,
+    isManager: normalized.isManager,
+    isCoordinator: normalized.isCoordinator,
+    isLearningCoordinator: normalized.isLearningCoordinator,
+    isCoach: normalized.isCoach,
+    isInstructionalCoach: normalized.isInstructionalCoach,
+    isCorporate: normalized.isCorporate,
+    isHr: normalized.isHr,
+    isLearner: normalized.isLearner
+  });
+
+  invalidateUsersCache();
+
+  res.json({
+    success: true,
+    message: 'User roles updated',
+    user: normalized
+  });
+}));
+
+// Update user provider (admin only)
+app.put('/api/admin/users/:userId/provider', apiLimiter, validateBody(userProviderSchema), asyncHandler(async (req, res) => {
+  requireAdmin(req);
+
+  const { userId } = req.params;
+  const { providerId } = req.body;
+
+  const users = await getCachedUsers();
+  const user = users.find(u => u.id === userId);
+
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+
+  const nextProviderId = providerId || null;
+  if (nextProviderId) {
+    const provider = await providersStorage.getProvider(nextProviderId);
+    if (!provider) {
+      throw new NotFoundError('Provider');
+    }
+  }
+
+  const previousProviderId = user.providerId || null;
+
+  if (previousProviderId && previousProviderId !== nextProviderId) {
+    await userAssignmentsStorage.deleteAssignmentsByProviderUser(previousProviderId, user.id);
+  }
+
+  await usersStorage.saveUser({ ...user, providerId: nextProviderId });
+  invalidateUsersCache();
+
+  if (nextProviderId && nextProviderId !== previousProviderId) {
+    const providerCourses = await providerCoursesStorage.listProviderCourses(nextProviderId);
+    if (providerCourses.length > 0) {
+      const assignedAt = new Date().toISOString();
+      const dueDate = addDays(assignedAt, 30);
+      const assignments = providerCourses.map(course => ({
+        providerId: nextProviderId,
+        userId: user.id,
+        courseId: course.courseId,
+        assignedAt,
+        dueDate
+      }));
+      await userAssignmentsStorage.upsertAssignments(assignments);
+    }
+  }
+
+  res.json({ success: true, message: 'User provider updated' });
 }));
 
 // Delete user (admin only)
@@ -1879,7 +2811,7 @@ app.delete('/api/admin/users/:userId', apiLimiter, asyncHandler(async (req, res)
   const currentUser = verifyAuth(req);
   
   // Find user by ID to get email
-  const users = await usersStorage.getAllUsers();
+  const users = await getCachedUsers();
   const userToDelete = users.find(u => u.id === userId);
   
   if (!userToDelete) {
@@ -1892,8 +2824,8 @@ app.delete('/api/admin/users/:userId', apiLimiter, asyncHandler(async (req, res)
   }
   
   // Prevent deleting the last admin
-  if (userToDelete.role === 'admin') {
-    const adminCount = users.filter(u => u.role === 'admin').length;
+  if (isAdminUser(userToDelete)) {
+    const adminCount = countAdmins(users);
     if (adminCount <= 1) {
       throw new ValidationError('Cannot delete the last admin');
     }
@@ -1902,7 +2834,135 @@ app.delete('/api/admin/users/:userId', apiLimiter, asyncHandler(async (req, res)
   await usersStorage.deleteUser(userToDelete.email);
   
   serverLogger.info({ userId, email: userToDelete.email }, 'User deleted');
+  invalidateUsersCache();
   res.json({ success: true, message: 'User deleted successfully' });
+}));
+
+// ============================================================================
+// Provider Management Routes (Admin Only)
+// ============================================================================
+
+app.get('/api/admin/providers', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const providers = await providersStorage.listProviders();
+  res.json(providers);
+}));
+
+app.post('/api/admin/providers', apiLimiter, validateBody(providerSchema), asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const providerId = uuidv4();
+  const provider = await providersStorage.saveProvider({
+    providerId,
+    name: req.body.name
+  });
+  res.status(201).json(provider);
+}));
+
+app.put('/api/admin/providers/:providerId', apiLimiter, validateBody(providerSchema), asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { providerId } = req.params;
+  const existing = await providersStorage.getProvider(providerId);
+  if (!existing) {
+    throw new NotFoundError('Provider');
+  }
+  const updated = await providersStorage.saveProvider({
+    providerId,
+    name: req.body.name,
+    createdAt: existing.createdAt
+  });
+  res.json(updated);
+}));
+
+app.delete('/api/admin/providers/:providerId', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { providerId } = req.params;
+  const existing = await providersStorage.getProvider(providerId);
+  if (!existing) {
+    throw new NotFoundError('Provider');
+  }
+
+  await providerCoursesStorage.deleteCoursesForProvider(providerId);
+  await userAssignmentsStorage.deleteAssignmentsByProvider(providerId);
+
+  const users = await getCachedUsers();
+  const usersToUpdate = users.filter(u => u.providerId === providerId);
+  await Promise.all(usersToUpdate.map(user => usersStorage.saveUser({ ...user, providerId: null })));
+  invalidateUsersCache();
+
+  await providersStorage.deleteProvider(providerId);
+  res.json({ success: true, message: 'Provider deleted' });
+}));
+
+app.get('/api/admin/providers/:providerId/courses', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { providerId } = req.params;
+  const provider = await providersStorage.getProvider(providerId);
+  if (!provider) {
+    throw new NotFoundError('Provider');
+  }
+
+  const assignments = await providerCoursesStorage.listProviderCourses(providerId);
+  const courses = await getCachedCourses();
+  const courseMap = new Map(courses.map(c => [c.courseId, c]));
+
+  const rows = assignments.map(assignment => ({
+    providerId,
+    courseId: assignment.courseId,
+    title: courseMap.get(assignment.courseId)?.title || assignment.courseId,
+    assignedAt: assignment.assignedAt
+  }));
+
+  res.json(rows);
+}));
+
+app.post('/api/admin/providers/:providerId/courses', apiLimiter, validateBody(providerCourseSchema), asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { providerId } = req.params;
+  const { courseId } = req.body;
+
+  const provider = await providersStorage.getProvider(providerId);
+  if (!provider) {
+    throw new NotFoundError('Provider');
+  }
+
+  const course = await coursesStorage.getCourseById(courseId);
+  if (!course) {
+    throw new NotFoundError('Course');
+  }
+
+  const existingAssignment = await providerCoursesStorage.getProviderCourse(providerId, courseId);
+  if (existingAssignment) {
+    return res.json({ success: true, message: 'Course already assigned' });
+  }
+
+  const assignedAt = new Date().toISOString();
+  await providerCoursesStorage.assignCourseToProvider(providerId, courseId, assignedAt);
+
+  const users = await getCachedUsers();
+  const providerUsers = users.filter(user => user.providerId === providerId);
+  if (providerUsers.length > 0) {
+    const dueDate = addDays(assignedAt, 30);
+    const assignments = providerUsers.map(user => ({
+      providerId,
+      userId: user.id,
+      courseId,
+      assignedAt,
+      dueDate
+    }));
+    await userAssignmentsStorage.upsertAssignments(assignments);
+  }
+
+  res.status(201).json({ success: true, message: 'Course assigned to provider' });
+}));
+
+app.delete('/api/admin/providers/:providerId/courses/:courseId', apiLimiter, asyncHandler(async (req, res) => {
+  requireAdmin(req);
+  const { providerId, courseId } = req.params;
+
+  await providerCoursesStorage.removeCourseFromProvider(providerId, courseId);
+  await userAssignmentsStorage.deleteAssignmentsByProviderCourse(providerId, courseId);
+
+  res.json({ success: true, message: 'Course removed from provider' });
 }));
 
 // ============================================================================

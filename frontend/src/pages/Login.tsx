@@ -1,23 +1,38 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { motion } from "framer-motion";
-import { useNavigate, Link } from "react-router-dom";
+import { useLocation, useNavigate, Link } from "react-router-dom";
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import api from "../services/api";
-import { handleAuthResponse } from "../services/auth";
+import { handleAuthResponse, getDefaultLandingPath } from "../services/auth";
 
 const Login = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     email: "",
     password: "",
   });
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const reason = params.get('reason');
+    if (!reason) return;
+
+    if (reason === 'forbidden') {
+      toast.error("Access denied. Please sign in again.");
+    } else {
+      toast.error("Session expired. Please sign in again.");
+    }
+
+    navigate("/login", { replace: true });
+  }, [location.search, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,7 +42,7 @@ const Login = () => {
       const response = await api.post('/api/auth/login', { email: formData.email, password: formData.password });
       handleAuthResponse(response.data);
       toast.success("Welcome back!");
-      navigate("/dashboard");
+      navigate(getDefaultLandingPath());
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } };
       toast.error(error.response?.data?.error || 'Login failed');
